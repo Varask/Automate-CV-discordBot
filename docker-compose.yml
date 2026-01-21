@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  # Discord Bot (Rust)
+  discord-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: discord-cv-bot
+    restart: unless-stopped
+    environment:
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - GUILD_ID=${GUILD_ID:-}
+      - MCP_HOST=claudecode
+      - MCP_PORT=8080
+      - RUST_LOG=info
+    volumes:
+      - bot-data:/app/data
+      - ./dbLookout:/app/dbLookout
+    depends_on:
+      - claudecode
+    networks:
+      - labnet
+
+  # Claude Code MCP Server
+  claudecode:
+    image: claudecode:latest
+    container_name: claudecode
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - rust:/workspace/rust
+    networks:
+      - labnet
+
+volumes:
+  bot-data:
+  rust:
+    external: true
+
+networks:
+  labnet:
+    external: true
