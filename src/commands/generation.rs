@@ -1,10 +1,16 @@
 use async_trait::async_trait;
 use serenity::all::{
-    CommandInteraction, CommandOptionType, Context, CreateCommand, CreateCommandOption,
-    CreateInteractionResponse, CreateInteractionResponseMessage,
+    Colour, CommandInteraction, CommandOptionType, Context, CreateCommand, CreateCommandOption,
+    CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
 };
+use tracing::{error, info};
 
 use super::{CommandError, SlashCommand};
+use crate::db::Database;
+use crate::ClaudeClientKey;
+
+const COLOR_SYNTHESIS: Colour = Colour::from_rgb(46, 204, 113);
+const COLOR_SALARY: Colour = Colour::from_rgb(230, 126, 34);
 
 // ============================================================================
 // SynthesizeOffer Command
@@ -48,15 +54,53 @@ impl SlashCommand for SynthesizeOfferCommand {
     }
 
     async fn execute(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<(), CommandError> {
-        // Acknowledge immédiatement (les opérations AI peuvent être longues)
         defer_response(ctx, interaction).await?;
 
-        let _description = get_string_option(interaction, "description")?;
+        let description = get_string_option(interaction, "description")?;
 
-        // TODO: Appeler le service AI pour synthétiser l'offre
-        let response = "🔍 **Job Offer Synthesis**\n\nAI analysis coming soon!";
+        // Récupérer le client Claude
+        let claude_client = {
+            let data = ctx.data.read().await;
+            data.get::<ClaudeClientKey>()
+                .ok_or_else(|| CommandError::Internal("Claude client not found".to_string()))?
+                .clone()
+        };
 
-        followup_response(ctx, interaction, response).await
+        info!("Synthesizing job offer");
+
+        match claude_client.synthesize_job_offer(&description).await {
+            Ok(synthesis) => {
+                let mut embed = CreateEmbed::new()
+                    .title("📋 SYNTHÈSE DE L'OFFRE")
+                    .colour(COLOR_SYNTHESIS)
+                    .field("🏢 Entreprise", &synthesis.company, true)
+                    .field("💼 Poste", &synthesis.title, true)
+                    .field("📍 Lieu", &synthesis.location, true)
+                    .field("📝 Contrat", &synthesis.contract_type, true);
+
+                if let Some(salary) = &synthesis.salary_range {
+                    embed = embed.field("💰 Salaire", salary, true);
+                }
+
+                let requirements = if synthesis.key_requirements.is_empty() {
+                    "Non spécifié".to_string()
+                } else {
+                    synthesis.key_requirements.iter()
+                        .map(|r| format!("• {}", r))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+
+                embed = embed.field("🎯 Compétences clés", requirements, false);
+                embed = embed.field("📖 Résumé", &synthesis.summary, false);
+
+                followup_embed(ctx, interaction, embed).await
+            }
+            Err(e) => {
+                error!("Failed to synthesize: {}", e);
+                followup_response(ctx, interaction, &format!("❌ Erreur: {}", e)).await
+            }
+        }
     }
 }
 
@@ -99,26 +143,90 @@ impl SlashCommand for GenerateResumeCommand {
                 )
                 .required(true),
             )
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Attachment,
-                    "cv",
-                    "Your existing CV file",
-                )
-                .required(true),
-            )
     }
 
     async fn execute(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<(), CommandError> {
         defer_response(ctx, interaction).await?;
 
-        let _job_description = get_string_option(interaction, "job_description")?;
-        // let _cv_attachment = get_attachment_option(interaction, "cv")?;
+        let job_description = get_string_option(interaction, "job_description")?;
+        let user_id = interaction.user.id;
 
-        // TODO: Générer le CV adapté avec AI
-        let response = "📝 **Resume Generation**\n\nAI-powered resume generation coming soon!";
+        // Récupérer le client Claude et la DB
+        let (claude_client, db) = {
+            let data = ctx.data.read().await;
+            let claude = data.get::<ClaudeClientKey>()
+                .ok_or_else(|| CommandError::Internal("Claude client not found".to_string()))?
+                .clone();
+            let db = data.get::<Database>()
+                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
+                .clone();
+            (claude, db)
+        };
 
-        followup_response(ctx, interaction, response).await
+        // Récupérer le CV de l'utilisateur
+        let user_cv = db.get_active_cv(user_id.get() as i64)
+            .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
+
+        let cv_content = match &user_cv {
+            Some(cv) => {
+                match tokio::fs::read_to_string(&cv.file_path).await {
+                    Ok(content) => content,
+                    Err(_) => cv.extracted_text.clone().unwrap_or_else(|| "CV non lisible".to_string())
+                }
+            }
+            None => {
+                return followup_response(ctx, interaction,
+                    "❌ **Aucun CV trouvé**\n\nUtilisez `/sendcv` pour uploader votre CV d'abord."
+                ).await;
+            }
+        };
+
+        info!("Generating resume for user {}", user_id);
+
+        // 1. Synthétiser l'offre
+        let synthesis = match claude_client.synthesize_job_offer(&job_description).await {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to synthesize: {}", e);
+                return followup_response(ctx, interaction, &format!("❌ Erreur de synthèse: {}", e)).await;
+            }
+        };
+
+        // 2. Matcher les skills
+        let skills_match = match claude_client.match_skills(&job_description, &cv_content).await {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to match skills: {}", e);
+                return followup_response(ctx, interaction, &format!("❌ Erreur d'analyse: {}", e)).await;
+            }
+        };
+
+        // 3. Générer le CV
+        match claude_client.generate_tailored_cv(&cv_content, &synthesis, &skills_match).await {
+            Ok(generated) => {
+                let mut embed = CreateEmbed::new()
+                    .title("📝 CV PERSONNALISÉ GÉNÉRÉ")
+                    .colour(Colour::from_rgb(52, 152, 219))
+                    .field("🎯 Poste ciblé", format!("{} chez {}", synthesis.title, synthesis.company), false)
+                    .field("📊 Score de matching", format!("{}%", skills_match.match_score), true)
+                    .field("📝 Résumé", &generated.summary, false);
+
+                if !generated.adaptations.is_empty() {
+                    let adaptations = generated.adaptations.iter()
+                        .take(5)
+                        .map(|a| format!("• {}", a))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    embed = embed.field("✨ Adaptations", adaptations, false);
+                }
+
+                followup_embed(ctx, interaction, embed).await
+            }
+            Err(e) => {
+                error!("Failed to generate CV: {}", e);
+                followup_response(ctx, interaction, &format!("❌ Erreur de génération: {}", e)).await
+            }
+        }
     }
 }
 
@@ -147,7 +255,7 @@ impl SlashCommand for GenerateCoverLetterCommand {
     }
 
     fn description(&self) -> &'static str {
-        "Generate a cover letter based on job description and CV"
+        "Generate a cover letter based on job description and your stored CV"
     }
 
     fn register(&self) -> CreateCommand {
@@ -161,25 +269,71 @@ impl SlashCommand for GenerateCoverLetterCommand {
                 )
                 .required(true),
             )
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Attachment,
-                    "cv",
-                    "Your CV file",
-                )
-                .required(true),
-            )
     }
 
     async fn execute(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<(), CommandError> {
         defer_response(ctx, interaction).await?;
 
-        let _job_description = get_string_option(interaction, "job_description")?;
+        let job_description = get_string_option(interaction, "job_description")?;
+        let user_id = interaction.user.id;
 
-        // TODO: Générer la lettre de motivation avec AI
-        let response = "✉️ **Cover Letter Generation**\n\nAI-powered cover letter coming soon!";
+        // Récupérer Claude et DB
+        let (claude_client, db) = {
+            let data = ctx.data.read().await;
+            let claude = data.get::<ClaudeClientKey>()
+                .ok_or_else(|| CommandError::Internal("Claude client not found".to_string()))?
+                .clone();
+            let db = data.get::<Database>()
+                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
+                .clone();
+            (claude, db)
+        };
 
-        followup_response(ctx, interaction, response).await
+        // Récupérer le CV
+        let user_cv = db.get_active_cv(user_id.get() as i64)
+            .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
+
+        let cv_content = match &user_cv {
+            Some(cv) => {
+                tokio::fs::read_to_string(&cv.file_path).await
+                    .unwrap_or_else(|_| cv.extracted_text.clone().unwrap_or_default())
+            }
+            None => String::new()
+        };
+
+        info!("Generating cover letter for user {}", user_id);
+
+        // Prompt pour générer la lettre de motivation
+        let prompt = format!(
+            "Génère une lettre de motivation professionnelle en français pour cette offre d'emploi. \
+            Retourne UNIQUEMENT le texte de la lettre, sans JSON.\n\n\
+            Offre:\n{}\n\n\
+            CV du candidat:\n{}",
+            job_description,
+            if cv_content.is_empty() { "Non fourni" } else { &cv_content }
+        );
+
+        match claude_client.prompt(&prompt).await {
+            Ok(letter) => {
+                // Discord limite les messages à 2000 caractères
+                let truncated = if letter.len() > 1900 {
+                    format!("{}...\n\n_[Tronqué - lettre complète disponible sur demande]_", &letter[..1900])
+                } else {
+                    letter
+                };
+
+                let embed = CreateEmbed::new()
+                    .title("✉️ LETTRE DE MOTIVATION")
+                    .colour(Colour::from_rgb(155, 89, 182))
+                    .description(truncated);
+
+                followup_embed(ctx, interaction, embed).await
+            }
+            Err(e) => {
+                error!("Failed to generate cover letter: {}", e);
+                followup_response(ctx, interaction, &format!("❌ Erreur: {}", e)).await
+            }
+        }
     }
 }
 
@@ -218,10 +372,71 @@ impl SlashCommand for GenerateMarketAnalysisCommand {
     async fn execute(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<(), CommandError> {
         defer_response(ctx, interaction).await?;
 
-        // TODO: Analyser le marché avec AI
-        let response = "📊 **Market Analysis**\n\nAI-powered market analysis coming soon!";
+        let user_id = interaction.user.id;
 
-        followup_response(ctx, interaction, response).await
+        // Récupérer Claude et DB
+        let (claude_client, db) = {
+            let data = ctx.data.read().await;
+            let claude = data.get::<ClaudeClientKey>()
+                .ok_or_else(|| CommandError::Internal("Claude client not found".to_string()))?
+                .clone();
+            let db = data.get::<Database>()
+                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
+                .clone();
+            (claude, db)
+        };
+
+        // Récupérer le CV pour l'analyse de marché
+        let user_cv = db.get_active_cv(user_id.get() as i64)
+            .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
+
+        let cv_content = match &user_cv {
+            Some(cv) => {
+                tokio::fs::read_to_string(&cv.file_path).await
+                    .unwrap_or_else(|_| cv.extracted_text.clone().unwrap_or_default())
+            }
+            None => {
+                return followup_response(ctx, interaction,
+                    "❌ **Aucun CV trouvé**\n\nUtilisez `/sendcv` pour uploader votre CV d'abord."
+                ).await;
+            }
+        };
+
+        info!("Generating market analysis for user {}", user_id);
+
+        let prompt = format!(
+            "Analyse le marché de l'emploi basé sur ce CV. Retourne un JSON:\n\
+            {{\n\
+                \"profile_summary\": \"résumé du profil\",\n\
+                \"key_skills\": [\"skill1\", \"skill2\"],\n\
+                \"market_demand\": \"haute/moyenne/basse\",\n\
+                \"salary_range\": \"fourchette salariale estimée\",\n\
+                \"trending_skills\": [\"skill à développer\"],\n\
+                \"job_titles\": [\"postes correspondants\"],\n\
+                \"recommendations\": [\"conseil 1\"]\n\
+            }}\n\nCV:\n{}",
+            cv_content
+        );
+
+        match claude_client.prompt(&prompt).await {
+            Ok(response) => {
+                // Parser le JSON ou afficher brut
+                let embed = CreateEmbed::new()
+                    .title("📊 ANALYSE DE MARCHÉ")
+                    .colour(Colour::from_rgb(52, 73, 94))
+                    .description(if response.len() > 1900 {
+                        format!("{}...", &response[..1900])
+                    } else {
+                        response
+                    });
+
+                followup_embed(ctx, interaction, embed).await
+            }
+            Err(e) => {
+                error!("Failed to analyze market: {}", e);
+                followup_response(ctx, interaction, &format!("❌ Erreur: {}", e)).await
+            }
+        }
     }
 }
 
@@ -256,6 +471,19 @@ async fn followup_response(
         .edit_response(&ctx.http, serenity::all::EditInteractionResponse::new().content(content))
         .await
         .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
-    
+
+    Ok(())
+}
+
+async fn followup_embed(
+    ctx: &Context,
+    interaction: &CommandInteraction,
+    embed: CreateEmbed,
+) -> Result<(), CommandError> {
+    interaction
+        .edit_response(&ctx.http, serenity::all::EditInteractionResponse::new().embed(embed))
+        .await
+        .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
+
     Ok(())
 }

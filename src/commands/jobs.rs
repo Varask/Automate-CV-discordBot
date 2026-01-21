@@ -4,9 +4,10 @@ use serenity::all::{
     CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
     EditInteractionResponse,
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use super::{CommandError, SlashCommand};
+use crate::db::Database;
 use crate::services::{JobSynthesis, SalaryAnalysis, SkillsMatch};
 use crate::ClaudeClientKey;
 
@@ -147,23 +148,61 @@ impl SlashCommand for ApplyJobCommand {
             .await
             .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
-        // 2. Analyse des compétences (pour l'instant sans CV, on utilisera un placeholder)
-        // TODO: Récupérer le CV de l'utilisateur depuis la DB
-        let cv_placeholder = "CV non fourni - analyse basée sur l'offre uniquement";
+        // 2. Récupérer le CV de l'utilisateur depuis la DB
+        let db = {
+            let data = ctx.data.read().await;
+            data.get::<Database>()
+                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
+                .clone()
+        };
 
+        let user_cv = db.get_active_cv(user_id.get() as i64)
+            .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
+
+        let cv_content = match &user_cv {
+            Some(cv) => {
+                // Lire le contenu du fichier CV
+                match tokio::fs::read_to_string(&cv.file_path).await {
+                    Ok(content) => {
+                        info!("Loaded CV for user {}: {}", user_id, cv.original_name);
+                        content
+                    }
+                    Err(e) => {
+                        warn!("Failed to read CV file {}: {}", cv.file_path, e);
+                        // Utiliser le texte extrait s'il existe
+                        cv.extracted_text.clone().unwrap_or_else(|| {
+                            format!("CV: {} (contenu non lisible)", cv.original_name)
+                        })
+                    }
+                }
+            }
+            None => {
+                info!("No CV found for user {}", user_id);
+                "CV non fourni - analyse basée sur l'offre uniquement".to_string()
+            }
+        };
+
+        let has_cv = user_cv.is_some();
+
+        // Analyse des compétences
         let skills_match = match claude_client
-            .match_skills(&job_description, cv_placeholder)
+            .match_skills(&job_description, &cv_content)
             .await
         {
             Ok(s) => s,
             Err(e) => {
                 error!("Failed to match skills: {}", e);
                 // Continuer avec des valeurs par défaut
+                let default_highlight = if has_cv {
+                    "Analyse en cours...".to_string()
+                } else {
+                    "Uploadez votre CV avec `/sendcv` pour une analyse personnalisée".to_string()
+                };
                 SkillsMatch {
                     match_score: 0,
                     matched_skills: vec![],
                     missing_skills: vec![],
-                    highlights: vec!["Uploadez votre CV pour une analyse personnalisée".to_string()],
+                    highlights: vec![default_highlight],
                     recommendations: vec![],
                 }
             }
@@ -209,15 +248,65 @@ impl SlashCommand for ApplyJobCommand {
             .await
             .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
-        // 4. Message final (CV sera généré quand l'utilisateur aura uploadé son CV)
-        let final_embed = CreateEmbed::new()
-            .title("📄 Génération de CV")
-            .description(
-                "Pour générer un CV personnalisé, utilisez `/sendcv` pour uploader votre CV de base, \
-                puis relancez `/applyjob`.",
-            )
-            .colour(COLOR_CV)
-            .field("Prochaines étapes", "1. `/sendcv` - Uploader votre CV\n2. `/applyjob` - Relancer l'analyse\n3. Télécharger votre CV personnalisé", false);
+        // 4. Génération de CV personnalisé si CV disponible
+        let final_embed = if has_cv {
+            // Générer le CV adapté
+            match claude_client
+                .generate_tailored_cv(&cv_content, &synthesis, &skills_match)
+                .await
+            {
+                Ok(generated_cv) => {
+                    let mut embed = CreateEmbed::new()
+                        .title("📄 CV PERSONNALISÉ GÉNÉRÉ")
+                        .colour(COLOR_CV)
+                        .field("📝 Résumé des adaptations", &generated_cv.summary, false);
+
+                    if !generated_cv.adaptations.is_empty() {
+                        let adaptations = generated_cv
+                            .adaptations
+                            .iter()
+                            .take(5)
+                            .map(|a| format!("• {}", a))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        embed = embed.field("✨ Modifications apportées", adaptations, false);
+                    }
+
+                    // TODO: Sauvegarder le LaTeX et générer le PDF
+                    embed = embed.field(
+                        "📥 Téléchargement",
+                        "_La génération PDF sera disponible prochainement._",
+                        false,
+                    );
+
+                    embed
+                }
+                Err(e) => {
+                    error!("Failed to generate tailored CV: {}", e);
+                    CreateEmbed::new()
+                        .title("📄 Génération de CV")
+                        .description(format!("Erreur lors de la génération: {}", e))
+                        .colour(COLOR_CV)
+                        .field(
+                            "💡 Conseil",
+                            "Réessayez avec `/applyjob` ou vérifiez que votre CV est bien uploadé.",
+                            false,
+                        )
+                }
+            }
+        } else {
+            CreateEmbed::new()
+                .title("📄 Génération de CV")
+                .description(
+                    "Pour générer un CV personnalisé, uploadez d'abord votre CV de base.",
+                )
+                .colour(COLOR_CV)
+                .field(
+                    "Prochaines étapes",
+                    "1. `/sendcv` - Uploader votre CV\n2. `/applyjob` - Relancer l'analyse\n3. Télécharger votre CV personnalisé",
+                    false,
+                )
+        };
 
         interaction
             .create_followup(
