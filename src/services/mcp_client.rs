@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 #[derive(Error, Debug)]
 pub enum McpError {
@@ -19,6 +19,8 @@ pub enum McpError {
     Protocol(String),
     #[error("Claude error: {0}")]
     Claude(String),
+    #[error("Timeout")]
+    Timeout,
 }
 
 /// JSON-RPC 2.0 Request
@@ -34,7 +36,9 @@ struct JsonRpcRequest {
 /// JSON-RPC 2.0 Response
 #[derive(Deserialize, Debug)]
 struct JsonRpcResponse {
+    #[allow(dead_code)]
     jsonrpc: String,
+    #[allow(dead_code)]
     id: Option<u64>,
     #[serde(default)]
     result: Option<Value>,
@@ -46,16 +50,19 @@ struct JsonRpcResponse {
 struct JsonRpcError {
     code: i64,
     message: String,
+    #[allow(dead_code)]
     #[serde(default)]
     data: Option<Value>,
 }
 
 /// MCP Client pour communiquer avec Claude Code
+/// Utilise le format Content-Length (comme LSP)
 pub struct McpClient {
     host: String,
     port: u16,
     request_id: AtomicU64,
     stream: Mutex<Option<TcpStream>>,
+    initialized: Mutex<bool>,
 }
 
 impl McpClient {
@@ -66,6 +73,7 @@ impl McpClient {
             port,
             request_id: AtomicU64::new(1),
             stream: Mutex::new(None),
+            initialized: Mutex::new(false),
         }
     }
 
@@ -93,7 +101,17 @@ impl McpClient {
 
         // Initialize the MCP connection
         self.initialize().await?;
+        *self.initialized.lock().await = true;
 
+        Ok(())
+    }
+
+    /// Ensure connection is established
+    async fn ensure_connected(&self) -> Result<(), McpError> {
+        let initialized = *self.initialized.lock().await;
+        if !initialized {
+            self.connect().await?;
+        }
         Ok(())
     }
 
@@ -110,10 +128,46 @@ impl McpClient {
             }
         });
 
-        self.send_request("initialize", Some(params)).await
+        let result = self.send_request("initialize", Some(params)).await?;
+
+        // Send initialized notification
+        self.send_notification("notifications/initialized", None).await?;
+
+        Ok(result)
     }
 
-    /// Envoie une requête JSON-RPC et attend la réponse
+    /// Encode message with Content-Length header (LSP/MCP format)
+    fn encode_message(content: &str) -> Vec<u8> {
+        let header = format!("Content-Length: {}\r\n\r\n", content.len());
+        let mut message = header.into_bytes();
+        message.extend_from_slice(content.as_bytes());
+        message
+    }
+
+    /// Send a notification (no response expected)
+    async fn send_notification(&self, method: &str, params: Option<Value>) -> Result<(), McpError> {
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params
+        });
+
+        let content = serde_json::to_string(&notification)?;
+        let message = Self::encode_message(&content);
+
+        let mut stream_guard = self.stream.lock().await;
+        let stream = stream_guard
+            .as_mut()
+            .ok_or_else(|| McpError::Connection("Not connected".to_string()))?;
+
+        stream.write_all(&message).await?;
+        stream.flush().await?;
+
+        debug!("Sent notification: {}", method);
+        Ok(())
+    }
+
+    /// Envoie une requête JSON-RPC et attend la réponse (format Content-Length)
     async fn send_request(&self, method: &str, params: Option<Value>) -> Result<Value, McpError> {
         let id = self.request_id.fetch_add(1, Ordering::SeqCst);
 
@@ -124,28 +178,24 @@ impl McpClient {
             params,
         };
 
-        let request_json = serde_json::to_string(&request)?;
-        debug!("Sending MCP request: {}", request_json);
+        let content = serde_json::to_string(&request)?;
+        let message = Self::encode_message(&content);
+
+        debug!("Sending MCP request: {}", content);
 
         let mut stream_guard = self.stream.lock().await;
         let stream = stream_guard
             .as_mut()
             .ok_or_else(|| McpError::Connection("Not connected".to_string()))?;
 
-        // Envoyer la requête (avec newline comme délimiteur)
-        stream
-            .write_all(format!("{}\n", request_json).as_bytes())
-            .await?;
+        // Send the message
+        stream.write_all(&message).await?;
         stream.flush().await?;
 
-        // Lire la réponse
-        let mut reader = BufReader::new(stream);
-        let mut response_line = String::new();
-        reader.read_line(&mut response_line).await?;
+        // Read the response with Content-Length header
+        let response = self.read_response(stream).await?;
 
-        debug!("Received MCP response: {}", response_line.trim());
-
-        let response: JsonRpcResponse = serde_json::from_str(&response_line)?;
+        debug!("Received MCP response: {:?}", response);
 
         if let Some(error) = response.error {
             return Err(McpError::Protocol(format!(
@@ -156,16 +206,68 @@ impl McpClient {
 
         response
             .result
-            .ok_or_else(|| McpError::Protocol("Empty response".to_string()))
+            .ok_or_else(|| McpError::Protocol("Empty result in response".to_string()))
+    }
+
+    /// Read a response with Content-Length header
+    async fn read_response(&self, stream: &mut TcpStream) -> Result<JsonRpcResponse, McpError> {
+        let mut reader = BufReader::new(stream);
+
+        // Read headers until we find Content-Length
+        let mut content_length: Option<usize> = None;
+
+        loop {
+            let mut header_line = String::new();
+            let bytes_read = reader.read_line(&mut header_line).await?;
+
+            if bytes_read == 0 {
+                return Err(McpError::Protocol("Connection closed".to_string()));
+            }
+
+            let trimmed = header_line.trim();
+
+            // Empty line signals end of headers
+            if trimmed.is_empty() {
+                break;
+            }
+
+            // Parse Content-Length header
+            if let Some(len_str) = trimmed.strip_prefix("Content-Length:") {
+                content_length = Some(
+                    len_str
+                        .trim()
+                        .parse()
+                        .map_err(|_| McpError::Protocol("Invalid Content-Length".to_string()))?,
+                );
+            }
+        }
+
+        let content_length = content_length
+            .ok_or_else(|| McpError::Protocol("Missing Content-Length header".to_string()))?;
+
+        // Read the body
+        let mut body = vec![0u8; content_length];
+        reader.read_exact(&mut body).await?;
+
+        let body_str = String::from_utf8(body)
+            .map_err(|_| McpError::Protocol("Invalid UTF-8 in response".to_string()))?;
+
+        debug!("Response body: {}", body_str);
+
+        let response: JsonRpcResponse = serde_json::from_str(&body_str)?;
+        Ok(response)
     }
 
     /// Liste les outils disponibles
     pub async fn list_tools(&self) -> Result<Value, McpError> {
+        self.ensure_connected().await?;
         self.send_request("tools/list", None).await
     }
 
     /// Appelle un outil MCP
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, McpError> {
+        self.ensure_connected().await?;
+
         let params = json!({
             "name": name,
             "arguments": arguments
@@ -177,62 +279,131 @@ impl McpClient {
     /// Envoie un prompt à Claude via l'outil Bash (exécute claude -p)
     pub async fn send_prompt(&self, prompt: &str) -> Result<String, McpError> {
         // Échapper les guillemets dans le prompt
-        let escaped_prompt = prompt.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped_prompt = prompt
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('$', "\\$")
+            .replace('`', "\\`");
 
         let command = format!(
-            "claude -p \"{}\" --output-format json",
-            escaped_prompt
+            "claude -p \"{}\" --output-format json 2>/dev/null || claude -p \"{}\"",
+            escaped_prompt, escaped_prompt
         );
 
         let result = self.call_tool("Bash", json!({ "command": command })).await?;
 
         // Extraire le résultat
+        self.extract_text_from_result(&result)
+    }
+
+    /// Extract text from MCP tool result
+    fn extract_text_from_result(&self, result: &Value) -> Result<String, McpError> {
+        // Try different response formats
         if let Some(content) = result.get("content") {
-            if let Some(text) = content.as_str() {
-                return Ok(text.to_string());
-            }
+            // Array format: [{"type": "text", "text": "..."}]
             if let Some(arr) = content.as_array() {
-                if let Some(first) = arr.first() {
-                    if let Some(text) = first.get("text").and_then(|t| t.as_str()) {
+                for item in arr {
+                    if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
                         return Ok(text.to_string());
                     }
                 }
             }
+            // Direct string
+            if let Some(text) = content.as_str() {
+                return Ok(text.to_string());
+            }
         }
 
-        Ok(serde_json::to_string_pretty(&result)?)
+        // Try direct text field
+        if let Some(text) = result.get("text").and_then(|t| t.as_str()) {
+            return Ok(text.to_string());
+        }
+
+        // Return the whole result as string
+        Ok(serde_json::to_string_pretty(result)?)
     }
 
     /// Synthétise une offre d'emploi
     pub async fn synthesize_job_offer(&self, job_description: &str) -> Result<JobSynthesis, McpError> {
         let prompt = format!(
-            r#"Analyse cette offre d'emploi et retourne un JSON avec la structure suivante:
+            r#"Analyse cette offre d'emploi et retourne UNIQUEMENT un JSON valide (sans texte avant ou après) avec cette structure:
 {{
     "title": "titre du poste",
-    "company": "nom de l'entreprise",
-    "location": "lieu",
-    "contract_type": "type de contrat (CDI, CDD, etc.)",
+    "company": "nom de l'entreprise ou 'Non spécifié'",
+    "location": "lieu ou 'Non spécifié'",
+    "contract_type": "type de contrat (CDI, CDD, etc.) ou 'Non spécifié'",
     "key_requirements": ["compétence1", "compétence2"],
     "responsibilities": ["responsabilité1", "responsabilité2"],
     "benefits": ["avantage1", "avantage2"],
-    "salary_range": "fourchette salariale si mentionnée",
+    "salary_range": "fourchette salariale si mentionnée ou null",
     "summary": "résumé en 2-3 phrases"
 }}
 
 Offre d'emploi:
-{}
-
-Réponds UNIQUEMENT avec le JSON, sans autre texte."#,
+{}"#,
             job_description
         );
 
         let response = self.send_prompt(&prompt).await?;
 
-        // Parser le JSON de la réponse
-        let synthesis: JobSynthesis = serde_json::from_str(&response)
-            .map_err(|e| McpError::Claude(format!("Failed to parse synthesis: {} - Response: {}", e, response)))?;
+        // Try to extract JSON from response
+        let json_str = self.extract_json_from_response(&response)?;
+
+        let synthesis: JobSynthesis = serde_json::from_str(&json_str)
+            .map_err(|e| McpError::Claude(format!("Failed to parse synthesis: {} - JSON: {}", e, json_str)))?;
 
         Ok(synthesis)
+    }
+
+    /// Extract JSON from a response that might contain other text
+    fn extract_json_from_response(&self, response: &str) -> Result<String, McpError> {
+        // Find JSON object in response
+        let trimmed = response.trim();
+
+        // If it starts with {, try to parse directly
+        if trimmed.starts_with('{') {
+            // Find matching closing brace
+            let mut depth = 0;
+            let mut end_idx = 0;
+            for (i, c) in trimmed.chars().enumerate() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end_idx = i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if end_idx > 0 {
+                return Ok(trimmed[..end_idx].to_string());
+            }
+        }
+
+        // Try to find JSON in markdown code block
+        if let Some(start) = trimmed.find("```json") {
+            if let Some(end) = trimmed[start..].find("```\n").or(trimmed[start..].rfind("```")) {
+                let json_start = start + 7; // "```json".len()
+                let json_end = start + end;
+                if json_end > json_start {
+                    return Ok(trimmed[json_start..json_end].trim().to_string());
+                }
+            }
+        }
+
+        // Try to find any JSON object
+        if let Some(start) = trimmed.find('{') {
+            if let Some(end) = trimmed.rfind('}') {
+                if end > start {
+                    return Ok(trimmed[start..=end].to_string());
+                }
+            }
+        }
+
+        Err(McpError::Claude(format!("No JSON found in response: {}", response)))
     }
 
     /// Analyse les compétences et le matching avec un CV
@@ -242,33 +413,32 @@ Réponds UNIQUEMENT avec le JSON, sans autre texte."#,
         cv_content: &str,
     ) -> Result<SkillsMatch, McpError> {
         let prompt = format!(
-            r#"Compare ce CV avec cette offre d'emploi et retourne un JSON avec la structure suivante:
+            r#"Compare ce CV avec cette offre d'emploi et retourne UNIQUEMENT un JSON valide:
 {{
-    "match_score": 85,
+    "match_score": 75,
     "matched_skills": [
-        {{"skill": "Rust", "cv_level": "5 ans", "required": "3 ans", "match": true}}
+        {{"skill": "Python", "cv_level": "3 ans", "required": "2 ans", "match": true}}
     ],
     "missing_skills": [
         {{"skill": "Kubernetes", "importance": "nice-to-have"}}
     ],
     "highlights": ["point fort 1", "point fort 2"],
-    "recommendations": ["recommandation 1", "recommandation 2"]
+    "recommendations": ["recommandation 1"]
 }}
 
 CV:
 {}
 
 Offre d'emploi:
-{}
-
-Réponds UNIQUEMENT avec le JSON, sans autre texte."#,
+{}"#,
             cv_content, job_description
         );
 
         let response = self.send_prompt(&prompt).await?;
+        let json_str = self.extract_json_from_response(&response)?;
 
-        let skills: SkillsMatch = serde_json::from_str(&response)
-            .map_err(|e| McpError::Claude(format!("Failed to parse skills match: {} - Response: {}", e, response)))?;
+        let skills: SkillsMatch = serde_json::from_str(&json_str)
+            .map_err(|e| McpError::Claude(format!("Failed to parse skills match: {} - JSON: {}", e, json_str)))?;
 
         Ok(skills)
     }
@@ -282,7 +452,7 @@ Réponds UNIQUEMENT avec le JSON, sans autre texte."#,
         let location_str = location.unwrap_or("France");
 
         let prompt = format!(
-            r#"Analyse le salaire pour cette offre d'emploi et retourne un JSON avec la structure suivante:
+            r#"Analyse le salaire pour cette offre et retourne UNIQUEMENT un JSON valide:
 {{
     "offered_min": 50000,
     "offered_max": 65000,
@@ -290,25 +460,24 @@ Réponds UNIQUEMENT avec le JSON, sans autre texte."#,
     "market_median": 58000,
     "market_high": 72000,
     "currency": "EUR",
-    "analysis": "Analyse détaillée du positionnement salarial",
+    "analysis": "Analyse du positionnement salarial",
     "negotiation_tips": ["conseil 1", "conseil 2"]
 }}
 
-Si le salaire n'est pas mentionné dans l'offre, estime-le based sur le marché.
+Si le salaire n'est pas mentionné, mets null pour offered_min et offered_max.
 
-Offre d'emploi:
+Offre:
 {}
 
-Localisation: {}
-
-Réponds UNIQUEMENT avec le JSON, sans autre texte."#,
+Localisation: {}"#,
             job_description, location_str
         );
 
         let response = self.send_prompt(&prompt).await?;
+        let json_str = self.extract_json_from_response(&response)?;
 
-        let salary: SalaryAnalysis = serde_json::from_str(&response)
-            .map_err(|e| McpError::Claude(format!("Failed to parse salary analysis: {} - Response: {}", e, response)))?;
+        let salary: SalaryAnalysis = serde_json::from_str(&json_str)
+            .map_err(|e| McpError::Claude(format!("Failed to parse salary: {} - JSON: {}", e, json_str)))?;
 
         Ok(salary)
     }
@@ -321,29 +490,19 @@ Réponds UNIQUEMENT avec le JSON, sans autre texte."#,
         skills_match: &SkillsMatch,
     ) -> Result<GeneratedCv, McpError> {
         let prompt = format!(
-            r#"Génère un CV adapté à cette offre d'emploi au format LaTeX.
-
-CV original:
-{}
-
-Poste visé: {} chez {}
-Compétences clés requises: {}
-Points forts à mettre en avant: {}
-
-Génère un CV LaTeX professionnel qui:
-1. Met en avant les compétences matchées
-2. Adapte le titre et le résumé au poste
-3. Réorganise les expériences par pertinence
-4. Utilise un template moderne
-
-Retourne un JSON avec:
+            r#"Génère un CV adapté au format LaTeX. Retourne UNIQUEMENT un JSON valide:
 {{
     "latex_content": "\\documentclass{{article}}...",
     "adaptations": ["adaptation 1", "adaptation 2"],
     "summary": "résumé des modifications"
 }}
 
-Réponds UNIQUEMENT avec le JSON, sans autre texte."#,
+CV original:
+{}
+
+Poste: {} chez {}
+Compétences requises: {}
+Points forts: {}"#,
             cv_content,
             job_synthesis.title,
             job_synthesis.company,
@@ -352,9 +511,10 @@ Réponds UNIQUEMENT avec le JSON, sans autre texte."#,
         );
 
         let response = self.send_prompt(&prompt).await?;
+        let json_str = self.extract_json_from_response(&response)?;
 
-        let cv: GeneratedCv = serde_json::from_str(&response)
-            .map_err(|e| McpError::Claude(format!("Failed to parse generated CV: {} - Response: {}", e, response)))?;
+        let cv: GeneratedCv = serde_json::from_str(&json_str)
+            .map_err(|e| McpError::Claude(format!("Failed to parse CV: {} - JSON: {}", e, json_str)))?;
 
         Ok(cv)
     }
