@@ -161,18 +161,26 @@ impl SlashCommand for ApplyJobCommand {
 
         let cv_content = match &user_cv {
             Some(cv) => {
-                // Lire le contenu du fichier CV
-                match tokio::fs::read_to_string(&cv.file_path).await {
-                    Ok(content) => {
-                        info!("Loaded CV for user {}: {}", user_id, cv.original_name);
-                        content
+                // Priorité au texte extrait (stocké en DB)
+                if let Some(ref extracted) = cv.extracted_text {
+                    if !extracted.is_empty() {
+                        info!("Using extracted text for CV {} (user {})", cv.id, user_id);
+                        extracted.clone()
+                    } else {
+                        warn!("Extracted text is empty for CV {}", cv.id);
+                        format!("CV: {} (texte non disponible - réuploadez votre CV)", cv.original_name)
                     }
-                    Err(e) => {
-                        warn!("Failed to read CV file {}: {}", cv.file_path, e);
-                        // Utiliser le texte extrait s'il existe
-                        cv.extracted_text.clone().unwrap_or_else(|| {
-                            format!("CV: {} (contenu non lisible)", cv.original_name)
-                        })
+                } else {
+                    // Fallback: essayer de lire le fichier (pour les fichiers texte)
+                    match tokio::fs::read_to_string(&cv.file_path).await {
+                        Ok(content) => {
+                            info!("Read CV file directly for user {}", user_id);
+                            content
+                        }
+                        Err(_) => {
+                            warn!("No extracted text and file not readable for CV {}", cv.id);
+                            format!("CV: {} (texte non extrait - réuploadez votre CV avec /sendcv)", cv.original_name)
+                        }
                     }
                 }
             }

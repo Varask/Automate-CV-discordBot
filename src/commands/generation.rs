@@ -169,9 +169,17 @@ impl SlashCommand for GenerateResumeCommand {
 
         let cv_content = match &user_cv {
             Some(cv) => {
-                match tokio::fs::read_to_string(&cv.file_path).await {
-                    Ok(content) => content,
-                    Err(_) => cv.extracted_text.clone().unwrap_or_else(|| "CV non lisible".to_string())
+                // Priorité au texte extrait (pour les PDF)
+                if let Some(ref text) = cv.extracted_text {
+                    if !text.is_empty() {
+                        text.clone()
+                    } else {
+                        tokio::fs::read_to_string(&cv.file_path).await
+                            .unwrap_or_else(|_| "CV non lisible".to_string())
+                    }
+                } else {
+                    tokio::fs::read_to_string(&cv.file_path).await
+                        .unwrap_or_else(|_| "CV non lisible".to_string())
                 }
             }
             None => {
@@ -181,7 +189,7 @@ impl SlashCommand for GenerateResumeCommand {
             }
         };
 
-        info!("Generating resume for user {}", user_id);
+        info!("Generating resume for user {} with {} chars of CV", user_id, cv_content.len());
 
         // 1. Synthétiser l'offre
         let synthesis = match claude_client.synthesize_job_offer(&job_description).await {
@@ -295,13 +303,20 @@ impl SlashCommand for GenerateCoverLetterCommand {
 
         let cv_content = match &user_cv {
             Some(cv) => {
-                tokio::fs::read_to_string(&cv.file_path).await
-                    .unwrap_or_else(|_| cv.extracted_text.clone().unwrap_or_default())
+                if let Some(ref text) = cv.extracted_text {
+                    if !text.is_empty() {
+                        text.clone()
+                    } else {
+                        tokio::fs::read_to_string(&cv.file_path).await.unwrap_or_default()
+                    }
+                } else {
+                    tokio::fs::read_to_string(&cv.file_path).await.unwrap_or_default()
+                }
             }
             None => String::new()
         };
 
-        info!("Generating cover letter for user {}", user_id);
+        info!("Generating cover letter for user {} with {} chars", user_id, cv_content.len());
 
         // Prompt pour générer la lettre de motivation
         let prompt = format!(
@@ -392,8 +407,15 @@ impl SlashCommand for GenerateMarketAnalysisCommand {
 
         let cv_content = match &user_cv {
             Some(cv) => {
-                tokio::fs::read_to_string(&cv.file_path).await
-                    .unwrap_or_else(|_| cv.extracted_text.clone().unwrap_or_default())
+                if let Some(ref text) = cv.extracted_text {
+                    if !text.is_empty() {
+                        text.clone()
+                    } else {
+                        tokio::fs::read_to_string(&cv.file_path).await.unwrap_or_default()
+                    }
+                } else {
+                    tokio::fs::read_to_string(&cv.file_path).await.unwrap_or_default()
+                }
             }
             None => {
                 return followup_response(ctx, interaction,

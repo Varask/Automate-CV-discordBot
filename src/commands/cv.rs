@@ -1,14 +1,16 @@
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serenity::all::{
     CommandInteraction, CommandOptionType, Context, CreateCommand, CreateCommandOption,
     CreateInteractionResponse, CreateInteractionResponseMessage, EditInteractionResponse,
 };
 use std::path::PathBuf;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 use uuid::Uuid;
 
 use super::{CommandError, SlashCommand};
 use crate::db::Database;
+use crate::ClaudeClientKey;
 
 // ============================================================================
 // SendCV Command
@@ -130,11 +132,15 @@ impl SlashCommand for SendCvCommand {
         info!("CV saved to {:?}", file_path);
 
         // Sauvegarder en base de données
-        let db = {
+        let (db, claude_client) = {
             let data = ctx.data.read().await;
-            data.get::<Database>()
+            let db = data.get::<Database>()
                 .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone()
+                .clone();
+            let claude = data.get::<ClaudeClientKey>()
+                .ok_or_else(|| CommandError::Internal("Claude client not found".to_string()))?
+                .clone();
+            (db, claude)
         };
 
         // Upsert user first
@@ -154,17 +160,72 @@ impl SlashCommand for SendCvCommand {
 
         info!("CV saved to database with id {}", cv_id);
 
+        // Mettre à jour le statut
+        interaction
+            .edit_response(
+                &ctx.http,
+                EditInteractionResponse::new().content(
+                    "✅ CV uploadé!\n⏳ Extraction du texte en cours..."
+                ),
+            )
+            .await
+            .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
+
+        // Extraire le texte du CV via Claude
+        let is_pdf = extension.to_lowercase() == "pdf";
+        let extracted_text = if is_pdf {
+            // Encoder le PDF en base64 et demander à Claude d'extraire le texte
+            let base64_content = BASE64.encode(&file_bytes);
+            let prompt = format!(
+                "Voici un CV au format PDF encodé en base64. Extrais et retourne UNIQUEMENT le texte brut du CV, \
+                sans commentaires ni formatage. Garde la structure (sections, listes) mais en texte simple.\n\n\
+                Base64 PDF (premiers 50000 caractères):\n{}",
+                &base64_content[..base64_content.len().min(50000)]
+            );
+
+            match claude_client.prompt(&prompt).await {
+                Ok(text) => {
+                    info!("Successfully extracted {} chars from PDF", text.len());
+                    Some(text)
+                }
+                Err(e) => {
+                    warn!("Failed to extract PDF text via Claude: {}", e);
+                    None
+                }
+            }
+        } else {
+            // Pour les fichiers texte, lire directement
+            String::from_utf8(file_bytes.clone()).ok()
+        };
+
+        // Sauvegarder le texte extrait
+        if let Some(ref text) = extracted_text {
+            if let Err(e) = db.update_cv_extracted_data(cv_id, text, "{}") {
+                warn!("Failed to save extracted text: {}", e);
+            } else {
+                info!("Extracted text saved for CV {}", cv_id);
+            }
+        }
+
+        let extraction_status = if extracted_text.is_some() {
+            "✅ Texte extrait avec succès"
+        } else {
+            "⚠️ Extraction du texte non disponible"
+        };
+
         let response = format!(
             "✅ **CV enregistré avec succès!**\n\n\
             👤 Utilisateur: <@{}>\n\
             📄 Fichier: `{}`\n\
             📦 Taille: {} bytes\n\
-            🆔 ID: `{}`\n\n\
+            🆔 ID: `{}`\n\
+            📝 {}\n\n\
             _Utilisez `/applyjob` pour postuler à une offre avec ce CV._",
             user_id,
             attachment.filename,
             attachment.size,
-            cv_id
+            cv_id,
+            extraction_status
         );
 
         interaction
