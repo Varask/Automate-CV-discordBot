@@ -2,6 +2,7 @@ mod admin;
 mod cv;
 mod generation;
 mod help;
+mod jobs;
 
 pub use admin::{ClearAllCvsCommand, GetCvCommand, ListCvsCommand};
 pub use cv::{DeleteCvCommand, ListMyCvsCommand, SendCvCommand};
@@ -10,6 +11,7 @@ pub use generation::{
     SynthesizeOfferCommand,
 };
 pub use help::HelpCommand;
+pub use jobs::{ApplyJobCommand, MyStatsCommand, StatusCommand, UpdateStatusCommand};
 
 use async_trait::async_trait;
 use serenity::all::{CommandInteraction, Context, CreateCommand};

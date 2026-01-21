@@ -1,23 +1,35 @@
 mod commands;
+mod db;
+mod services;
 
 use commands::{
-    ClearAllCvsCommand, CommandRegistry, DeleteCvCommand, GenerateCoverLetterCommand,
-    GenerateMarketAnalysisCommand, GenerateResumeCommand, GetCvCommand, HelpCommand,
-    ListCvsCommand, ListMyCvsCommand, SendCvCommand, SynthesizeOfferCommand,
+    ApplyJobCommand, ClearAllCvsCommand, CommandRegistry, DeleteCvCommand,
+    GenerateCoverLetterCommand, GenerateMarketAnalysisCommand, GenerateResumeCommand,
+    GetCvCommand, HelpCommand, ListCvsCommand, ListMyCvsCommand, MyStatsCommand,
+    SendCvCommand, StatusCommand, SynthesizeOfferCommand, UpdateStatusCommand,
 };
+use db::Database;
+use services::McpClient;
 use serenity::all::{GatewayIntents, GuildId, Interaction};
 use serenity::async_trait;
 use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 use std::env;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Clé pour stocker le registre de commandes dans le TypeMap de Serenity
 struct CommandRegistryKey;
 
 impl TypeMapKey for CommandRegistryKey {
     type Value = Arc<CommandRegistry>;
+}
+
+/// Clé pour stocker le client MCP dans le TypeMap de Serenity
+pub struct McpClientKey;
+
+impl TypeMapKey for McpClientKey {
+    type Value = Arc<McpClient>;
 }
 
 struct Handler;
@@ -95,26 +107,35 @@ impl EventHandler for Handler {
 fn build_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
 
-    // Commandes CV utilisateur
+    // === CORE USER COMMANDS ===
+    // CV Management
     registry
         .register(SendCvCommand::new())
         .register(DeleteCvCommand::new())
         .register(ListMyCvsCommand::new());
 
-    // Commandes admin
+    // Job Application Pipeline (main workflow)
+    registry
+        .register(ApplyJobCommand::new())
+        .register(StatusCommand::new())
+        .register(UpdateStatusCommand::new())
+        .register(MyStatsCommand::new());
+
+    // === ADMIN COMMANDS ===
     registry
         .register(ListCvsCommand::new())
         .register(GetCvCommand::new())
         .register(ClearAllCvsCommand::new());
 
-    // Commandes de génération AI
+    // === LEGACY/STANDALONE AI COMMANDS ===
+    // (kept for direct access, but /applyjob combines them)
     registry
         .register(SynthesizeOfferCommand::new())
         .register(GenerateResumeCommand::new())
         .register(GenerateCoverLetterCommand::new())
         .register(GenerateMarketAnalysisCommand::new());
 
-    // Help command (créée en dernier pour avoir accès aux infos des autres commandes)
+    // Help command (created last to include all commands)
     let help_info = registry.help_info();
     registry.register(HelpCommand::new(help_info));
 
@@ -128,7 +149,19 @@ async fn main() {
 
     // Charger les variables d'environnement
     dotenv::dotenv().ok();
-    
+
+    // Initialiser la base de données
+    let database = Database::new().expect("Failed to initialize database");
+
+    // Initialiser le client MCP (Claude Code)
+    let mcp_client = Arc::new(McpClient::from_env());
+
+    // Tenter de se connecter au serveur MCP
+    match mcp_client.connect().await {
+        Ok(_) => info!("🤖 Connected to Claude Code MCP server"),
+        Err(e) => warn!("⚠️ MCP connection failed (will retry on demand): {}", e),
+    }
+
     let token = env::var("DISCORD_BOT_TOKEN").expect("Expected DISCORD_BOT_TOKEN in .env");
 
     // Construire le registre de commandes
@@ -140,14 +173,16 @@ async fn main() {
         .await
         .expect("Failed to create client");
 
-    // Injecter le registre dans le TypeMap
+    // Injecter les services dans le TypeMap
     {
         let mut data = client.data.write().await;
         data.insert::<CommandRegistryKey>(registry);
+        data.insert::<Database>(database);
+        data.insert::<McpClientKey>(mcp_client);
     }
 
     info!("🚀 Starting bot...");
-    
+
     if let Err(e) = client.start().await {
         error!("Client error: {:?}", e);
     }
