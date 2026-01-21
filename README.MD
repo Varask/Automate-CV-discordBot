@@ -1,40 +1,172 @@
-# 🤖 Automate-CV-DiscordBot
+# Automate-CV-DiscordBot
 
-## 📋 Context
+Bot Discord pour automatiser la personnalisation de CV en fonction des offres d'emploi, propulsé par Claude AI.
+
+## Contexte
 
 En faisant ma recherche d'emploi, j'ai remarqué que j'ai les compétences pour postuler à plusieurs offres. Cependant, le pool de compétences est vaste et il est difficile de faire correspondre un seul CV à toutes les offres. J'ai donc décidé de créer un bot Discord qui automatise la personnalisation de mon CV en fonction des offres d'emploi.
 
-## ✨ Fonctionnalités
+## Fonctionnalités
 
-- 📄 Analyse du CV 
-- 💼 Analyse de l'offre d'emploi
-- 🎯 Personnalisation du CV en fonction de l'offre
-- 📤 Envoi sur Discord
-    - 📊 Synthèse de l'offre d'emploi
-    - ✅ CV personnalisé avec les points clés mis en avant
-    - 💰 Analyse salariale basée sur les données du marché avec suggestions de négociation
+- **Analyse de CV** - Upload et extraction automatique du contenu
+- **Synthèse d'offres** - Extraction des informations clés (poste, entreprise, compétences)
+- **Matching intelligent** - Score de compatibilité CV/offre avec détail des compétences
+- **Analyse salariale** - Fourchettes marché et conseils de négociation
+- **CV personnalisé** - Génération d'un CV adapté à chaque offre
+- **Suivi des candidatures** - Tracking du statut de chaque candidature
 
-> 🔄 **À venir** : Suivi des candidatures avec rappels automatiques pour les relances
+## Commandes principales
 
-## 🛠️ Technologies Utilisées
+| Commande | Description |
+|----------|-------------|
+| `/sendcv` | Uploader votre CV (PDF, DOC, TXT) |
+| `/applyjob` | Analyser une offre et générer un dossier complet |
+| `/status` | Voir vos candidatures |
+| `/mystats` | Consulter vos statistiques |
+| `/help` | Afficher toutes les commandes |
 
-- 🦀 **Rust**
-- 🔗 **Discord API**
-- 💾 **SQLite**
-- 📚 Bibliothèques de traitement de texte et d'analyse de données
-- 🧠 **Claude Code** (Dockerisé) pour analyser les offres et générer des CV personnalisés
+> Voir [doc/COMMANDS.md](doc/COMMANDS.md) pour la documentation complète des 15 commandes.
 
+## Technologies
 
-# Exemple d'Utilisation 
+| Composant | Technologie |
+|-----------|-------------|
+| Bot Discord | Rust + Serenity 0.12 |
+| Base de données | SQLite |
+| IA | Claude Code (via HTTP wrapper Python) |
+| Conteneurisation | Docker + Docker Compose |
 
-1. Ajoutez le bot à votre serveur Discord.
-2. Envoyez une offre d'emploi au bot via le canal dédié et la commande `/sendcv`.
-    - Le bot enregistrera l'offre dans une base de données SQLite.
-3. Envoyez l'offre d'emploi au bot via la commande `/applyjob` pour qu'il vous envoie:
-    - Une synthèse de l'offre d'emploi.
-    - Un CV personnalisé mettant en avant les compétences pertinentes depuis votre CV de base (conseil utilisez CV linkendIn il a tendance a etre a jour et plus complet).
-    - Une analyse salariale avec des suggestions de négociation.
-4. Verifiez le statut de vos candidatures avec la commande `/status`.
+## Quickstart
 
-## Diagramme d'Architecture
+### Prérequis
 
+- Docker & Docker Compose
+- Token de bot Discord
+- Image `claudeclode:latest` disponible
+
+### Installation
+
+```bash
+# 1. Cloner le projet
+git clone <repository_url>
+cd Automate-CV-discordBot
+
+# 2. Configurer les variables d'environnement
+cp .env.example .env
+# Éditer .env avec votre DISCORD_BOT_TOKEN
+
+# 3. Créer le réseau et volume Docker
+docker network create labnet
+docker volume create rust
+
+# 4. Lancer
+docker compose up -d
+
+# 5. Vérifier
+docker compose ps
+docker logs discord-cv-bot
+```
+
+> Voir [doc/DEPLOYMENT.md](doc/DEPLOYMENT.md) pour le guide complet de déploiement.
+
+## Exemple d'utilisation
+
+1. **Uploadez votre CV**
+   ```
+   /sendcv cv:mon_cv.pdf
+   ```
+
+2. **Analysez une offre d'emploi**
+   ```
+   /applyjob description:"Développeur Full Stack Senior chez TechCorp. CDI Paris. 5 ans exp Python, React..."
+   ```
+
+3. **Recevez 4 analyses**
+   - Synthèse de l'offre
+   - Compatibilité CV/Offre (score + détails)
+   - Analyse salariale avec conseils
+   - CV personnalisé pour cette offre
+
+4. **Suivez vos candidatures**
+   ```
+   /status
+   /updatestatus application_id:42 status:interview
+   ```
+
+## Architecture
+
+```
+┌──────────────┐     ┌─────────────────┐     ┌──────────────┐
+│   Discord    │────▶│  Bot Rust       │────▶│ Claude Server│
+│  (Users)     │     │  (Serenity)     │     │  (Python)    │
+└──────────────┘     └────────┬────────┘     └──────┬───────┘
+                              │                     │
+                              ▼                     ▼
+                     ┌─────────────────┐     ┌──────────────┐
+                     │    SQLite DB    │     │ Claude CLI   │
+                     │  (dbLookout/)   │     │              │
+                     └─────────────────┘     └──────────────┘
+```
+
+> Voir [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) pour les détails techniques.
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [ARCHITECTURE.md](doc/ARCHITECTURE.md) | Architecture technique, composants, flux de données |
+| [DEPLOYMENT.md](doc/DEPLOYMENT.md) | Guide de déploiement Docker et local |
+| [TESTING.md](doc/TESTING.md) | Protocole de test complet |
+| [API.md](doc/API.md) | Documentation API du serveur Claude |
+| [COMMANDS.md](doc/COMMANDS.md) | Référence des commandes Discord |
+
+## Structure du projet
+
+```
+Automate-CV-discordBot/
+├── src/
+│   ├── main.rs           # Point d'entrée
+│   ├── commands/         # Commandes Discord (15 commandes)
+│   ├── db/               # Couche base de données SQLite
+│   └── services/         # Client HTTP pour Claude
+├── claude-server/        # Wrapper HTTP Python pour Claude CLI
+├── doc/                  # Documentation technique
+├── dbLookout/            # Base de données (généré)
+├── data/cvs/             # CVs uploadés (généré)
+├── Dockerfile            # Image du bot Rust
+├── docker-compose.yml    # Orchestration
+└── .env.example          # Template de configuration
+```
+
+## Développement
+
+```bash
+# Build
+cargo build
+
+# Tests
+cargo test
+
+# Run local (nécessite le serveur Claude)
+export DISCORD_BOT_TOKEN="..."
+export CLAUDE_API_URL="http://localhost:8080"
+cargo run
+```
+
+> Voir [doc/TESTING.md](doc/TESTING.md) pour le protocole de test complet.
+
+## Roadmap
+
+- [x] Upload et extraction de CV
+- [x] Synthèse d'offres d'emploi
+- [x] Matching compétences CV/Offre
+- [x] Analyse salariale
+- [x] Génération CV adapté (LaTeX)
+- [ ] Compilation PDF du CV généré
+- [ ] Génération de lettres de motivation
+- [ ] Rappels automatiques pour les relances
+- [ ] Export des statistiques
+
+## Licence
+
+Projet personnel - Usage privé
