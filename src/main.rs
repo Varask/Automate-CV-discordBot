@@ -9,7 +9,7 @@ use commands::{
     SendCvCommand, StatusCommand, SynthesizeOfferCommand, UpdateStatusCommand,
 };
 use db::Database;
-use services::McpClient;
+use services::ClaudeClient;
 use serenity::all::{GatewayIntents, GuildId, Interaction};
 use serenity::async_trait;
 use serenity::model::gateway::Ready;
@@ -25,11 +25,11 @@ impl TypeMapKey for CommandRegistryKey {
     type Value = Arc<CommandRegistry>;
 }
 
-/// Clé pour stocker le client MCP dans le TypeMap de Serenity
-pub struct McpClientKey;
+/// Clé pour stocker le client Claude dans le TypeMap de Serenity
+pub struct ClaudeClientKey;
 
-impl TypeMapKey for McpClientKey {
-    type Value = Arc<McpClient>;
+impl TypeMapKey for ClaudeClientKey {
+    type Value = Arc<ClaudeClient>;
 }
 
 struct Handler;
@@ -86,7 +86,7 @@ impl EventHandler for Handler {
             // Dispatcher la commande
             if let Err(e) = registry.dispatch(&ctx, &cmd).await {
                 error!("Command error: {}", e);
-                
+
                 // Tenter d'envoyer un message d'erreur à l'utilisateur
                 let _ = cmd
                     .create_response(
@@ -153,13 +153,14 @@ async fn main() {
     // Initialiser la base de données
     let database = Database::new().expect("Failed to initialize database");
 
-    // Initialiser le client MCP (Claude Code)
-    let mcp_client = Arc::new(McpClient::from_env());
+    // Initialiser le client Claude (HTTP)
+    let claude_client = Arc::new(ClaudeClient::from_env());
 
-    // Tenter de se connecter au serveur MCP
-    match mcp_client.connect().await {
-        Ok(_) => info!("🤖 Connected to Claude Code MCP server"),
-        Err(e) => warn!("⚠️ MCP connection failed (will retry on demand): {}", e),
+    // Vérifier la connexion au serveur Claude
+    match claude_client.health_check().await {
+        Ok(true) => info!("🤖 Connected to Claude HTTP server"),
+        Ok(false) => warn!("⚠️ Claude server responded but not healthy"),
+        Err(e) => warn!("⚠️ Claude connection failed (will retry on demand): {}", e),
     }
 
     let token = env::var("DISCORD_BOT_TOKEN").expect("Expected DISCORD_BOT_TOKEN in .env");
@@ -178,7 +179,7 @@ async fn main() {
         let mut data = client.data.write().await;
         data.insert::<CommandRegistryKey>(registry);
         data.insert::<Database>(database);
-        data.insert::<McpClientKey>(mcp_client);
+        data.insert::<ClaudeClientKey>(claude_client);
     }
 
     info!("🚀 Starting bot...");

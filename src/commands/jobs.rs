@@ -7,8 +7,8 @@ use serenity::all::{
 use tracing::{error, info};
 
 use super::{CommandError, SlashCommand};
-use crate::services::mcp_client::{JobSynthesis, SalaryAnalysis, SkillsMatch};
-use crate::McpClientKey;
+use crate::services::{JobSynthesis, SalaryAnalysis, SkillsMatch};
+use crate::ClaudeClientKey;
 
 // Couleurs des embeds
 const COLOR_SYNTHESIS: Colour = Colour::from_rgb(46, 204, 113);   // Vert
@@ -101,11 +101,11 @@ impl SlashCommand for ApplyJobCommand {
         let _company = get_optional_string_option(interaction, "company");
         let _title = get_optional_string_option(interaction, "title");
 
-        // Récupérer le client MCP
-        let mcp_client = {
+        // Récupérer le client Claude
+        let claude_client = {
             let data = ctx.data.read().await;
-            data.get::<McpClientKey>()
-                .ok_or_else(|| CommandError::Internal("MCP client not found".to_string()))?
+            data.get::<ClaudeClientKey>()
+                .ok_or_else(|| CommandError::Internal("Claude client not found".to_string()))?
                 .clone()
         };
 
@@ -122,7 +122,7 @@ impl SlashCommand for ApplyJobCommand {
             .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
         // 1. Synthétiser l'offre d'emploi
-        let synthesis = match mcp_client.synthesize_job_offer(&job_description).await {
+        let synthesis = match claude_client.synthesize_job_offer(&job_description).await {
             Ok(s) => s,
             Err(e) => {
                 error!("Failed to synthesize job offer: {}", e);
@@ -151,7 +151,7 @@ impl SlashCommand for ApplyJobCommand {
         // TODO: Récupérer le CV de l'utilisateur depuis la DB
         let cv_placeholder = "CV non fourni - analyse basée sur l'offre uniquement";
 
-        let skills_match = match mcp_client
+        let skills_match = match claude_client
             .match_skills(&job_description, cv_placeholder)
             .await
         {
@@ -180,7 +180,7 @@ impl SlashCommand for ApplyJobCommand {
             .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
         // 3. Analyse salariale
-        let salary_analysis = match mcp_client
+        let salary_analysis = match claude_client
             .analyze_salary(&job_description, Some(&synthesis.location))
             .await
         {
@@ -352,7 +352,9 @@ fn build_salary_embed(salary: &SalaryAnalysis) -> CreateEmbed {
         );
     }
 
-    embed = embed.field("📝 Analyse", &salary.analysis, false);
+    if !salary.analysis.is_empty() {
+        embed = embed.field("📝 Analyse", &salary.analysis, false);
+    }
 
     // Conseils de négociation
     if !salary.negotiation_tips.is_empty() {
@@ -371,8 +373,8 @@ fn build_salary_embed(salary: &SalaryAnalysis) -> CreateEmbed {
 
 fn build_progress_bar(value: u32, max: u32) -> String {
     let percentage = (value as f32 / max as f32 * 10.0).round() as usize;
-    let filled = "█".repeat(percentage);
-    let empty = "░".repeat(10 - percentage);
+    let filled = "█".repeat(percentage.min(10));
+    let empty = "░".repeat(10 - percentage.min(10));
     format!("{}{}", filled, empty)
 }
 
@@ -393,7 +395,6 @@ async fn send_error_response(
 
 // ============================================================================
 // Status Command
-// View all job applications and their status
 // ============================================================================
 
 pub struct StatusCommand;
@@ -451,21 +452,14 @@ impl SlashCommand for StatusCommand {
         ctx: &Context,
         interaction: &CommandInteraction,
     ) -> Result<(), CommandError> {
-        let user_id = interaction.user.id;
+        let _user_id = interaction.user.id;
         let filter = get_optional_string_option(interaction, "filter").unwrap_or_else(|| "all".to_string());
         let limit = get_optional_int_option(interaction, "limit").unwrap_or(10);
 
-        // TODO: Query database
-        // let applications = db.get_applications(user_id, filter, limit).await?;
-
         let response = format!(
             "📊 **Your Applications** (filter: {}, limit: {})\n\n\
-            | # | Company | Position | Status | Match | Date |\n\
-            |---|---------|----------|--------|-------|------|\n\
-            | 1 | _Example Corp_ | _Backend Dev_ | 🟡 Applied | 85% | 2026-01-18 |\n\
-            | 2 | _Startup XYZ_ | _Rust Engineer_ | 🟢 Interview | 92% | 2026-01-15 |\n\n\
-            _Total: 2 applications_\n\n\
-            Use `/updatestatus <id> <status>` to update",
+            _Aucune candidature enregistrée_\n\n\
+            Utilisez `/applyjob` pour analyser une offre d'emploi.",
             filter, limit
         );
 
@@ -475,7 +469,6 @@ impl SlashCommand for StatusCommand {
 
 // ============================================================================
 // UpdateStatus Command
-// Update a job application status
 // ============================================================================
 
 pub struct UpdateStatusCommand;
@@ -534,12 +527,9 @@ impl SlashCommand for UpdateStatusCommand {
         ctx: &Context,
         interaction: &CommandInteraction,
     ) -> Result<(), CommandError> {
-        let _user_id = interaction.user.id;
         let application_id = get_int_option(interaction, "application_id")?;
         let new_status = get_string_option(interaction, "status")?;
         let note = get_optional_string_option(interaction, "note");
-
-        // TODO: Verify ownership & update database
 
         let status_emoji = match new_status.as_str() {
             "applied" => "🟡",
@@ -565,8 +555,7 @@ impl SlashCommand for UpdateStatusCommand {
 }
 
 // ============================================================================
-// MyStats Command (bonus)
-// View application statistics
+// MyStats Command
 // ============================================================================
 
 pub struct MyStatsCommand;
@@ -604,24 +593,10 @@ impl SlashCommand for MyStatsCommand {
     ) -> Result<(), CommandError> {
         let user_id = interaction.user.id;
 
-        // TODO: Aggregate from database
-
         let response = format!(
             "📈 **Your Statistics** <@{}>\n\n\
-            **Applications**\n\
-            • Total: 12\n\
-            • Applied: 8\n\
-            • Interviews: 3\n\
-            • Offers: 1\n\
-            • Rejected: 4\n\n\
-            **Performance**\n\
-            • Avg Match Score: 78%\n\
-            • Response Rate: 42%\n\
-            • Interview Rate: 25%\n\n\
-            **Top Companies Applied**\n\
-            1. Tech Corp (3)\n\
-            2. Startup Inc (2)\n\
-            3. BigCo (2)",
+            _Aucune statistique disponible_\n\n\
+            Utilisez `/applyjob` pour commencer à tracker vos candidatures.",
             user_id
         );
 

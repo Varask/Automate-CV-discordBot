@@ -1,3 +1,4 @@
-pub mod mcp_client;
+pub mod claude_client;
 
-pub use mcp_client::McpClient;
+pub use claude_client::ClaudeClient;
+pub use claude_client::{JobSynthesis, SkillsMatch, SalaryAnalysis, GeneratedCv};
