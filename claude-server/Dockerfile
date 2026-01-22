@@ -1,5 +1,5 @@
 # Extend the existing claudeclode image
-FROM claudeclode:latest
+FROM claudecode:latest
 
 # Install Python (if not already present)
 RUN apt-get update && apt-get install -y --no-install-recommends \
