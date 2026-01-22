@@ -140,6 +140,12 @@ fn create_tables(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Crée les tables pour les tests (version publique pour les tests uniquement)
+#[cfg(test)]
+pub fn create_tables_for_test(conn: &Connection) -> Result<()> {
+    create_tables(conn)
+}
+
 /// Crée les index pour optimiser les requêtes
 fn create_indexes(conn: &Connection) -> Result<()> {
     let indexes = [

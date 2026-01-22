@@ -192,6 +192,48 @@ impl ClaudeClient {
         Ok(salary)
     }
 
+    /// Extract text from a PDF file
+    pub async fn extract_pdf(&self, pdf_base64: &str) -> Result<String, ClaudeError> {
+        let url = format!("{}/extract-pdf", self.base_url);
+
+        info!("Extracting PDF text");
+
+        let response = self.client
+            .post(&url)
+            .json(&json!({ "pdf_base64": pdf_base64 }))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ClaudeError::Api(format!("HTTP {}: {}", status, body)));
+        }
+
+        let data: serde_json::Value = response.json().await?;
+
+        if let Some(error) = data.get("error").and_then(|e| e.as_str()) {
+            if !error.is_empty() {
+                return Err(ClaudeError::Api(error.to_string()));
+            }
+        }
+
+        let success = data.get("success").and_then(|s| s.as_bool()).unwrap_or(false);
+        if !success {
+            let error_msg = data.get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("Unknown error");
+            return Err(ClaudeError::Api(error_msg.to_string()));
+        }
+
+        let text = data.get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        Ok(text)
+    }
+
     /// Generate a tailored CV
     pub async fn generate_tailored_cv(
         &self,
@@ -227,9 +269,15 @@ impl ClaudeClient {
             return Err(ClaudeError::Api(error.to_string()));
         }
 
-        if data.get("raw_response").is_some() {
-            error!("Got raw response instead of structured data");
-            return Err(ClaudeError::Api("Failed to parse generated CV".to_string()));
+        // Handle raw_response fallback from server
+        if let Some(raw) = data.get("raw_response").and_then(|r| r.as_str()) {
+            info!("Got raw response, using fallback");
+            return Ok(GeneratedCv {
+                latex_content: String::new(),
+                cv_text: raw.to_string(),
+                adaptations: vec!["CV généré (format brut)".to_string()],
+                summary: "Le CV a été généré mais le parsing a échoué.".to_string(),
+            });
         }
 
         let cv: GeneratedCv = serde_json::from_value(data)?;
@@ -314,8 +362,21 @@ fn default_currency() -> String {
 pub struct GeneratedCv {
     #[serde(default)]
     pub latex_content: String,
+    #[serde(default, alias = "cv_text")]
+    pub cv_text: String,
     #[serde(default)]
     pub adaptations: Vec<String>,
     #[serde(default)]
     pub summary: String,
+}
+
+impl GeneratedCv {
+    /// Returns the CV content (prefers cv_text, falls back to latex_content)
+    pub fn get_content(&self) -> &str {
+        if !self.cv_text.is_empty() {
+            &self.cv_text
+        } else {
+            &self.latex_content
+        }
+    }
 }

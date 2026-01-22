@@ -171,25 +171,24 @@ impl SlashCommand for SendCvCommand {
             .await
             .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
-        // Extraire le texte du CV via Claude
+        // Extraire le texte du CV
         let is_pdf = extension.to_lowercase() == "pdf";
         let extracted_text = if is_pdf {
-            // Encoder le PDF en base64 et demander à Claude d'extraire le texte
+            // Utiliser l'endpoint d'extraction PDF du serveur
             let base64_content = BASE64.encode(&file_bytes);
-            let prompt = format!(
-                "Voici un CV au format PDF encodé en base64. Extrais et retourne UNIQUEMENT le texte brut du CV, \
-                sans commentaires ni formatage. Garde la structure (sections, listes) mais en texte simple.\n\n\
-                Base64 PDF (premiers 50000 caractères):\n{}",
-                &base64_content[..base64_content.len().min(50000)]
-            );
 
-            match claude_client.prompt(&prompt).await {
+            match claude_client.extract_pdf(&base64_content).await {
                 Ok(text) => {
-                    info!("Successfully extracted {} chars from PDF", text.len());
-                    Some(text)
+                    if text.is_empty() {
+                        warn!("PDF extraction returned empty text");
+                        None
+                    } else {
+                        info!("Successfully extracted {} chars from PDF", text.len());
+                        Some(text)
+                    }
                 }
                 Err(e) => {
-                    warn!("Failed to extract PDF text via Claude: {}", e);
+                    warn!("Failed to extract PDF text: {}", e);
                     None
                 }
             }

@@ -7,9 +7,23 @@ Exposes claude -p as HTTP endpoints.
 import json
 import subprocess
 import os
+import base64
+import tempfile
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 import traceback
+
+# PDF extraction - try multiple libraries
+PDF_EXTRACTOR = None
+try:
+    import pdfplumber
+    PDF_EXTRACTOR = "pdfplumber"
+except ImportError:
+    try:
+        import PyPDF2
+        PDF_EXTRACTOR = "pypdf2"
+    except ImportError:
+        print("Warning: No PDF library available. Install pdfplumber or PyPDF2 for PDF extraction.")
 
 PORT = int(os.environ.get("PORT", 8080))
 
@@ -60,6 +74,8 @@ class ClaudeHandler(BaseHTTPRequestHandler):
                 result = self.handle_salary_analysis(data)
             elif path == "/generate-cv":
                 result = self.handle_generate_cv(data)
+            elif path == "/extract-pdf":
+                result = self.handle_extract_pdf(data)
             else:
                 self._send_error("Not found", 404)
                 return
@@ -179,11 +195,16 @@ Localisation: {location}'''
         requirements = data.get("requirements", [])
         highlights = data.get("highlights", [])
 
-        prompt = f'''Génère un CV adapté au format LaTeX. Retourne UNIQUEMENT un JSON valide:
+        prompt = f'''Génère un CV adapté pour le poste. Retourne UNIQUEMENT un JSON valide avec ces champs:
+- "adaptations": liste des modifications apportées
+- "summary": résumé des adaptations (2-3 phrases)
+- "cv_text": le CV adapté en format texte structuré (PAS de LaTeX)
+
+Format attendu:
 {{
-    "latex_content": "\\\\documentclass{{article}}...",
-    "adaptations": ["adaptation 1"],
-    "summary": "résumé des modifications"
+    "adaptations": ["Mise en avant de X", "Reformulation de Y"],
+    "summary": "CV adapté pour mettre en valeur...",
+    "cv_text": "NOM PRENOM\\n\\nPROFIL\\n..."
 }}
 
 CV original:
@@ -191,10 +212,83 @@ CV original:
 
 Poste: {job_title} chez {company}
 Compétences requises: {", ".join(requirements)}
-Points forts: {", ".join(highlights)}'''
+Points forts à valoriser: {", ".join(highlights)}
 
-        response = self.run_claude(prompt)
-        return self.extract_json(response)
+IMPORTANT: Retourne UNIQUEMENT le JSON, sans markdown, sans commentaires.'''
+
+        response = self.run_claude(prompt, timeout=180)
+        result = self.extract_json(response)
+
+        # Fallback: si on a raw_response, essayer de construire une réponse valide
+        if "raw_response" in result:
+            return {
+                "latex_content": "",
+                "cv_text": result.get("raw_response", ""),
+                "adaptations": ["CV généré (format brut)"],
+                "summary": "Le CV a été généré mais le parsing JSON a échoué. Contenu disponible en texte brut."
+            }
+
+        # Compatibilité: renommer cv_text en latex_content si absent
+        if "cv_text" in result and "latex_content" not in result:
+            result["latex_content"] = result["cv_text"]
+
+        return result
+
+    def handle_extract_pdf(self, data: dict) -> dict:
+        """Extract text from a PDF file."""
+        pdf_base64 = data.get("pdf_base64", "")
+        if not pdf_base64:
+            raise ValueError("Missing 'pdf_base64' field")
+
+        if not PDF_EXTRACTOR:
+            return {
+                "success": False,
+                "error": "No PDF library available on server",
+                "text": ""
+            }
+
+        try:
+            # Decode base64 to bytes
+            pdf_bytes = base64.b64decode(pdf_base64)
+
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(pdf_bytes)
+                tmp_path = tmp.name
+
+            text = ""
+            try:
+                if PDF_EXTRACTOR == "pdfplumber":
+                    import pdfplumber
+                    with pdfplumber.open(tmp_path) as pdf:
+                        for page in pdf.pages:
+                            page_text = page.extract_text()
+                            if page_text:
+                                text += page_text + "\n\n"
+                elif PDF_EXTRACTOR == "pypdf2":
+                    import PyPDF2
+                    with open(tmp_path, "rb") as f:
+                        reader = PyPDF2.PdfReader(f)
+                        for page in reader.pages:
+                            page_text = page.extract_text()
+                            if page_text:
+                                text += page_text + "\n\n"
+            finally:
+                # Clean up temp file
+                os.unlink(tmp_path)
+
+            return {
+                "success": True,
+                "text": text.strip(),
+                "extractor": PDF_EXTRACTOR
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "text": ""
+            }
 
     def extract_json(self, response: str) -> dict:
         """Extract JSON from Claude's response."""
@@ -235,6 +329,7 @@ Points forts: {", ".join(highlights)}'''
 def main():
     server = HTTPServer(("0.0.0.0", PORT), ClaudeHandler)
     print(f"🚀 Claude HTTP Server running on port {PORT}")
+    print(f"📄 PDF Extractor: {PDF_EXTRACTOR or 'None (install pdfplumber)'}")
     print(f"Endpoints:")
     print(f"  GET  /health           - Health check")
     print(f"  POST /prompt           - Generic prompt")
@@ -242,6 +337,7 @@ def main():
     print(f"  POST /match-skills     - Skills matching")
     print(f"  POST /salary-analysis  - Salary analysis")
     print(f"  POST /generate-cv      - CV generation")
+    print(f"  POST /extract-pdf      - PDF text extraction")
 
     try:
         server.serve_forever()
