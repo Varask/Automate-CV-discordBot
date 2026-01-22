@@ -212,26 +212,35 @@ Localisation: {location}'''
         requirements = data.get("requirements", [])
         highlights = data.get("highlights", [])
 
-        prompt = f'''Génère un CV adapté pour le poste. Retourne UNIQUEMENT un JSON valide avec ces champs:
-- "adaptations": liste des modifications apportées
-- "summary": résumé des adaptations (2-3 phrases)
-- "cv_text": le CV adapté en format texte structuré (PAS de LaTeX)
+        prompt = f'''Génère un CV professionnel adapté pour le poste. Retourne UNIQUEMENT un JSON valide.
 
-Format attendu:
+STRUCTURE OBLIGATOIRE du cv_text (utilise ces sections exactes):
+1. PROFIL - 2-3 phrases percutantes adaptées au poste
+2. COMPÉTENCES CLÉS - Format "Catégorie: compétence1, compétence2" (une ligne par catégorie)
+3. EXPÉRIENCE PROFESSIONNELLE - Chaque entrée: "Dates | Poste | Entreprise | Lieu" puis bullets "• accomplissement"
+4. FORMATION - Chaque entrée: "Dates | Diplôme | École"
+5. CENTRES D'INTÉRÊT - Une ligne avec les intérêts pertinents
+
+FORMAT JSON ATTENDU:
 {{
-    "adaptations": ["Mise en avant de X", "Reformulation de Y"],
-    "summary": "CV adapté pour mettre en valeur...",
-    "cv_text": "NOM PRENOM\\n\\nPROFIL\\n..."
+    "adaptations": ["Modification 1", "Modification 2"],
+    "summary": "Résumé des adaptations en 2 phrases",
+    "cv_text": "PROFIL\\nTexte du profil adapté...\\n\\nCOMPÉTENCES CLÉS\\nLangages: C, C++, Python\\nSystèmes: Linux, RTOS\\n\\nEXPÉRIENCE PROFESSIONNELLE\\n2023-2025 | Ingénieur Dev | Entreprise | Lieu\\n• Accomplissement 1\\n• Accomplissement 2\\n\\nFORMATION\\n2020-2025 | Diplôme | École\\n\\nCENTRES D'INTÉRÊT\\nIntérêt1, Intérêt2"
 }}
 
-CV original:
+CV ORIGINAL:
 {cv_content}
 
-Poste: {job_title} chez {company}
-Compétences requises: {", ".join(requirements)}
-Points forts à valoriser: {", ".join(highlights)}
+POSTE VISÉ: {job_title} chez {company}
+COMPÉTENCES REQUISES: {", ".join(requirements)}
+POINTS FORTS À VALORISER: {", ".join(highlights)}
 
-IMPORTANT: Retourne UNIQUEMENT le JSON, sans markdown, sans commentaires.'''
+RÈGLES:
+- Adapte le profil pour cibler spécifiquement ce poste
+- Réorganise les compétences pour mettre en avant celles demandées
+- Reformule les expériences pour matcher les requirements
+- Reste factuel et concis (max 1 page)
+- Retourne UNIQUEMENT le JSON, sans markdown'''
 
         response = self.run_claude(prompt, timeout=180)
         result = self.extract_json(response)
@@ -312,7 +321,7 @@ IMPORTANT: Retourne UNIQUEMENT le JSON, sans markdown, sans commentaires.'''
             }
 
     def handle_generate_pdf(self, data: dict) -> dict:
-        """Generate a PDF from CV content."""
+        """Generate a professional PDF CV inspired by ModernCV template."""
         cv_content = data.get("cv_content", "")
         name = data.get("name", "Candidat")
         job_title = data.get("job_title", "")
@@ -333,106 +342,230 @@ IMPORTANT: Retourne UNIQUEMENT le JSON, sans markdown, sans commentaires.'''
             }
 
         try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import ParagraphStyle
+            from reportlab.lib.units import cm, mm
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+            from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
+            from reportlab.lib.colors import HexColor, black, white
+            from reportlab.platypus import HRFlowable
+            from reportlab.lib import colors
+
+            # Colors inspired by ModernCV blue theme
+            PRIMARY_COLOR = HexColor('#2E5090')  # Blue
+            SECONDARY_COLOR = HexColor('#404040')  # Dark gray
+            LIGHT_GRAY = HexColor('#808080')
+            VERY_LIGHT = HexColor('#F5F5F5')
+
             # Create temp file for PDF
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
                 tmp_path = tmp.name
 
-            # Create PDF document
+            # Create PDF document with tighter margins
             doc = SimpleDocTemplate(
                 tmp_path,
                 pagesize=A4,
-                rightMargin=2*cm,
-                leftMargin=2*cm,
-                topMargin=2*cm,
-                bottomMargin=2*cm
+                rightMargin=1.2*cm,
+                leftMargin=1.2*cm,
+                topMargin=1*cm,
+                bottomMargin=1*cm
             )
 
-            # Define styles
-            styles = getSampleStyleSheet()
+            # Define professional styles
+            styles = {}
 
-            # Custom styles
-            title_style = ParagraphStyle(
-                'CVTitle',
-                parent=styles['Heading1'],
-                fontSize=18,
-                spaceAfter=6,
-                textColor=HexColor('#1a365d'),
-                alignment=TA_CENTER
+            # Name style - large and prominent
+            styles['name'] = ParagraphStyle(
+                'Name',
+                fontSize=22,
+                textColor=PRIMARY_COLOR,
+                spaceAfter=2,
+                fontName='Helvetica-Bold',
+                alignment=TA_LEFT
             )
 
-            subtitle_style = ParagraphStyle(
-                'CVSubtitle',
-                parent=styles['Normal'],
+            # Title/Role style
+            styles['title'] = ParagraphStyle(
+                'Title',
                 fontSize=11,
-                spaceAfter=20,
-                textColor=HexColor('#4a5568'),
-                alignment=TA_CENTER
-            )
-
-            section_style = ParagraphStyle(
-                'CVSection',
-                parent=styles['Heading2'],
-                fontSize=12,
-                spaceBefore=15,
+                textColor=LIGHT_GRAY,
                 spaceAfter=8,
-                textColor=HexColor('#2c5282'),
-                borderPadding=(0, 0, 3, 0)
+                fontName='Helvetica-Oblique',
+                alignment=TA_LEFT
             )
 
-            body_style = ParagraphStyle(
-                'CVBody',
-                parent=styles['Normal'],
+            # Section header style
+            styles['section'] = ParagraphStyle(
+                'Section',
+                fontSize=11,
+                textColor=PRIMARY_COLOR,
+                spaceBefore=10,
+                spaceAfter=4,
+                fontName='Helvetica-Bold',
+                alignment=TA_LEFT
+            )
+
+            # Subsection/Job title style
+            styles['subsection'] = ParagraphStyle(
+                'Subsection',
                 fontSize=10,
-                spaceAfter=6,
-                leading=14
+                textColor=SECONDARY_COLOR,
+                spaceBefore=6,
+                spaceAfter=2,
+                fontName='Helvetica-Bold',
+                alignment=TA_LEFT
             )
 
-            bullet_style = ParagraphStyle(
-                'CVBullet',
-                parent=body_style,
-                leftIndent=20,
-                bulletIndent=10
+            # Company/Date info
+            styles['info'] = ParagraphStyle(
+                'Info',
+                fontSize=9,
+                textColor=LIGHT_GRAY,
+                spaceAfter=3,
+                fontName='Helvetica-Oblique',
+                alignment=TA_LEFT
+            )
+
+            # Body text style - compact
+            styles['body'] = ParagraphStyle(
+                'Body',
+                fontSize=9,
+                textColor=SECONDARY_COLOR,
+                spaceAfter=2,
+                leading=11,
+                fontName='Helvetica',
+                alignment=TA_JUSTIFY
+            )
+
+            # Bullet style - compact
+            styles['bullet'] = ParagraphStyle(
+                'Bullet',
+                fontSize=9,
+                textColor=SECONDARY_COLOR,
+                leftIndent=12,
+                spaceAfter=1,
+                leading=11,
+                fontName='Helvetica',
+                bulletIndent=0,
+                alignment=TA_LEFT
+            )
+
+            # Skill item style
+            styles['skill'] = ParagraphStyle(
+                'Skill',
+                fontSize=9,
+                textColor=SECONDARY_COLOR,
+                spaceAfter=1,
+                leading=11,
+                fontName='Helvetica',
+                alignment=TA_LEFT
+            )
+
+            # Skill label style
+            styles['skill_label'] = ParagraphStyle(
+                'SkillLabel',
+                fontSize=9,
+                textColor=PRIMARY_COLOR,
+                fontName='Helvetica-Bold',
+                alignment=TA_LEFT
             )
 
             # Build content
             story = []
 
-            # Header
-            story.append(Paragraph(name, title_style))
+            # === HEADER ===
+            story.append(Paragraph(name, styles['name']))
+
+            # Adapted title
             if job_title:
-                subtitle = f"CV adapté pour : {job_title}"
+                adapted_title = f"CV adapté pour : {job_title}"
                 if company:
-                    subtitle += f" - {company}"
-                story.append(Paragraph(subtitle, subtitle_style))
+                    adapted_title += f" — {company}"
+                story.append(Paragraph(adapted_title, styles['title']))
 
-            story.append(HRFlowable(width="100%", thickness=1, color=HexColor('#e2e8f0')))
-            story.append(Spacer(1, 10))
+            # Horizontal line under header
+            story.append(HRFlowable(width="100%", thickness=2, color=PRIMARY_COLOR, spaceAfter=8))
 
-            # Parse and add content
+            # === PARSE CV CONTENT ===
             lines = cv_content.split('\n')
             current_section = None
+            section_content = []
+
+            def is_section_header(line):
+                """Detect section headers"""
+                line_clean = line.strip().rstrip(':')
+                section_keywords = [
+                    'PROFIL', 'PROFILE', 'RÉSUMÉ', 'SUMMARY', 'OBJECTIF',
+                    'COMPÉTENCES', 'SKILLS', 'COMPETENCES', 'COMPÉTENCES CLÉS',
+                    'EXPÉRIENCE', 'EXPERIENCE', 'EXPÉRIENCES', 'PARCOURS',
+                    'FORMATION', 'EDUCATION', 'ÉTUDES', 'DIPLÔMES',
+                    'CENTRES', 'INTÉRÊTS', 'INTERESTS', 'HOBBIES', 'LOISIRS',
+                    'LANGUES', 'LANGUAGES', 'CERTIFICATIONS', 'PROJETS', 'PROJECTS',
+                    'COORDONNÉES', 'CONTACT', 'INFORMATIONS'
+                ]
+                return (
+                    line_clean.isupper() or
+                    any(kw in line_clean.upper() for kw in section_keywords) or
+                    (len(line_clean) < 40 and line.strip().endswith(':'))
+                )
+
+            def is_job_entry(line):
+                """Detect job/education entry headers"""
+                # Contains year pattern like 2020-2025 or 2024
+                import re
+                return bool(re.search(r'\b(19|20)\d{2}\b', line)) and len(line) < 100
 
             for line in lines:
                 line = line.strip()
                 if not line:
                     continue
 
-                # Escape HTML special characters
-                line = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                # Escape HTML
+                line_safe = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-                # Detect sections (lines in UPPERCASE or ending with :)
-                if line.isupper() or (len(line) < 50 and line.endswith(':')):
-                    story.append(Spacer(1, 5))
-                    story.append(Paragraph(line.rstrip(':'), section_style))
-                    story.append(HRFlowable(width="30%", thickness=0.5, color=HexColor('#cbd5e0')))
-                    current_section = line
-                # Bullet points
-                elif line.startswith('•') or line.startswith('-') or line.startswith('*'):
-                    text = line.lstrip('•-* ')
-                    story.append(Paragraph(f"• {text}", bullet_style))
-                # Regular text
+                if is_section_header(line):
+                    # New section
+                    story.append(Spacer(1, 6))
+                    section_title = line.rstrip(':').upper()
+                    story.append(Paragraph(section_title, styles['section']))
+                    story.append(HRFlowable(width="25%", thickness=1, color=PRIMARY_COLOR, spaceAfter=4))
+                    current_section = section_title
+
+                elif is_job_entry(line) and current_section and ('EXPÉRIENCE' in current_section.upper() or 'EXPERIENCE' in current_section.upper() or 'FORMATION' in current_section.upper() or 'EDUCATION' in current_section.upper()):
+                    # Job or education entry
+                    story.append(Spacer(1, 4))
+                    story.append(Paragraph(line_safe, styles['subsection']))
+
+                elif line.startswith('•') or line.startswith('-') or line.startswith('*') or line.startswith('–'):
+                    # Bullet point
+                    text = line.lstrip('•-*– ').strip()
+                    story.append(Paragraph(f"• {text}", styles['bullet']))
+
+                elif ':' in line and len(line.split(':')[0]) < 25 and current_section and 'COMPÉTENCE' in current_section.upper():
+                    # Skill entry like "Langages: C, C++, Python"
+                    parts = line.split(':', 1)
+                    if len(parts) == 2:
+                        label = parts[0].strip()
+                        value = parts[1].strip()
+                        # Create a mini table for alignment
+                        skill_data = [[
+                            Paragraph(f"<b>{label}</b>", styles['skill_label']),
+                            Paragraph(value, styles['skill'])
+                        ]]
+                        skill_table = Table(skill_data, colWidths=[3*cm, 14*cm])
+                        skill_table.setStyle(TableStyle([
+                            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                            ('TOPPADDING', (0, 0), (-1, -1), 1),
+                            ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+                        ]))
+                        story.append(skill_table)
+                    else:
+                        story.append(Paragraph(line_safe, styles['body']))
                 else:
-                    story.append(Paragraph(line, body_style))
+                    # Regular text
+                    story.append(Paragraph(line_safe, styles['body']))
 
             # Build PDF
             doc.build(story)
