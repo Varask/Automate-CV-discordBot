@@ -212,35 +212,63 @@ Localisation: {location}'''
         requirements = data.get("requirements", [])
         highlights = data.get("highlights", [])
 
-        prompt = f'''Génère un CV professionnel adapté pour le poste. Retourne UNIQUEMENT un JSON valide.
+        prompt = f'''Génère un CV CONCIS adapté au poste. MAXIMUM 1 PAGE. Format structuré.
 
-STRUCTURE OBLIGATOIRE du cv_text (utilise ces sections exactes):
-1. PROFIL - 2-3 phrases percutantes adaptées au poste
-2. COMPÉTENCES CLÉS - Format "Catégorie: compétence1, compétence2" (une ligne par catégorie)
-3. EXPÉRIENCE PROFESSIONNELLE - Chaque entrée: "Dates | Poste | Entreprise | Lieu" puis bullets "• accomplissement"
-4. FORMATION - Chaque entrée: "Dates | Diplôme | École"
-5. CENTRES D'INTÉRÊT - Une ligne avec les intérêts pertinents
+STRUCTURE EXACTE À SUIVRE:
 
-FORMAT JSON ATTENDU:
-{{
-    "adaptations": ["Modification 1", "Modification 2"],
-    "summary": "Résumé des adaptations en 2 phrases",
-    "cv_text": "PROFIL\\nTexte du profil adapté...\\n\\nCOMPÉTENCES CLÉS\\nLangages: C, C++, Python\\nSystèmes: Linux, RTOS\\n\\nEXPÉRIENCE PROFESSIONNELLE\\n2023-2025 | Ingénieur Dev | Entreprise | Lieu\\n• Accomplissement 1\\n• Accomplissement 2\\n\\nFORMATION\\n2020-2025 | Diplôme | École\\n\\nCENTRES D'INTÉRÊT\\nIntérêt1, Intérêt2"
-}}
+[NOM]
+Prénom NOM
 
-CV ORIGINAL:
+[TITRE]
+Titre professionnel adapté au poste visé
+
+[PROFIL]
+2-3 phrases percutantes ciblant le poste. Mentionne expérience clé et spécialisation.
+
+[COMPETENCES]
+Langages|C, C++, Python, Rust
+Systèmes|Linux embarqué, RTOS, contraintes mémoire
+Communication|UDP/TCP, CAN, RS422
+Qualité|Tests unitaires, analyse statique, traçabilité
+Outils|Git, GitLab CI, CMake, Make
+Langues|Français (natif), Anglais (C1)
+
+[EXPERIENCE]
+2023-2025|Ingénieur Développement|Entreprise|Ville
+- Accomplissement clé aligné avec le poste visé
+- Réalisation technique pertinente
+- Résultat mesurable si possible
+
+2022|Autre Poste|Entreprise|Ville
+- Point pertinent
+
+[FORMATION]
+2020-2025|Diplôme d'Ingénieur|École|Spécialisation
+
+[INTERETS]
+Domaine1, Domaine2, Hobby pertinent
+
+---
+CV SOURCE:
 {cv_content}
 
-POSTE VISÉ: {job_title} chez {company}
-COMPÉTENCES REQUISES: {", ".join(requirements)}
-POINTS FORTS À VALORISER: {", ".join(highlights)}
+POSTE VISÉ: {job_title}
+ENTREPRISE: {company}
+COMPÉTENCES DEMANDÉES: {", ".join(requirements[:6])}
+POINTS FORTS: {", ".join(highlights[:3]) if highlights else "À identifier"}
 
 RÈGLES:
-- Adapte le profil pour cibler spécifiquement ce poste
-- Réorganise les compétences pour mettre en avant celles demandées
-- Reformule les expériences pour matcher les requirements
-- Reste factuel et concis (max 1 page)
-- Retourne UNIQUEMENT le JSON, sans markdown'''
+1. Adapte le TITRE au poste visé
+2. PROFIL: 2-3 phrases ciblées, pas de généralités
+3. COMPETENCES: 5-7 lignes format "Catégorie|valeur1, valeur2"
+4. EXPERIENCE: MAX 3 postes, 3-5 bullets par poste pertinent
+5. FORMATION: MAX 2 entrées
+6. INTERETS: 1 ligne avec éléments pertinents
+7. Reformule les expériences pour matcher les compétences demandées
+8. Supprime tout ce qui n'est pas pertinent pour le poste
+
+Retourne UNIQUEMENT ce JSON (pas de markdown):
+{{"adaptations":["modification1","modification2"],"summary":"Résumé en 2 phrases","cv_text":"[NOM]\\nPrénom Nom\\n\\n[TITRE]\\n..."}}'''
 
         response = self.run_claude(prompt, timeout=180)
         result = self.extract_json(response)
@@ -321,278 +349,265 @@ RÈGLES:
             }
 
     def handle_generate_pdf(self, data: dict) -> dict:
-        """Generate a professional PDF CV inspired by ModernCV template."""
+        """Generate PDF from LaTeX using ModernCV template."""
         cv_content = data.get("cv_content", "")
         name = data.get("name", "Candidat")
         job_title = data.get("job_title", "")
         company = data.get("company", "")
 
         if not cv_content:
-            return {
-                "success": False,
-                "error": "Missing 'cv_content' field",
-                "pdf_base64": ""
-            }
-
-        if not PDF_GENERATOR:
-            return {
-                "success": False,
-                "error": "PDF generator not available. Install reportlab.",
-                "pdf_base64": ""
-            }
+            return {"success": False, "error": "Missing 'cv_content' field", "pdf_base64": ""}
 
         try:
-            from reportlab.lib.pagesizes import A4
-            from reportlab.lib.styles import ParagraphStyle
-            from reportlab.lib.units import cm, mm
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-            from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
-            from reportlab.lib.colors import HexColor, black, white
-            from reportlab.platypus import HRFlowable
-            from reportlab.lib import colors
+            # Parse CV content into sections
+            sections = self._parse_cv_sections(cv_content, name, job_title)
 
-            # Colors inspired by ModernCV blue theme
-            PRIMARY_COLOR = HexColor('#2E5090')  # Blue
-            SECONDARY_COLOR = HexColor('#404040')  # Dark gray
-            LIGHT_GRAY = HexColor('#808080')
-            VERY_LIGHT = HexColor('#F5F5F5')
+            # Generate LaTeX code
+            latex_code = self._generate_latex(sections, job_title, company)
 
-            # Create temp file for PDF
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                tmp_path = tmp.name
+            # Compile LaTeX to PDF
+            pdf_bytes = self._compile_latex(latex_code)
 
-            # Create PDF document with tighter margins
-            doc = SimpleDocTemplate(
-                tmp_path,
-                pagesize=A4,
-                rightMargin=1.2*cm,
-                leftMargin=1.2*cm,
-                topMargin=1*cm,
-                bottomMargin=1*cm
-            )
-
-            # Define professional styles
-            styles = {}
-
-            # Name style - large and prominent
-            styles['name'] = ParagraphStyle(
-                'Name',
-                fontSize=22,
-                textColor=PRIMARY_COLOR,
-                spaceAfter=2,
-                fontName='Helvetica-Bold',
-                alignment=TA_LEFT
-            )
-
-            # Title/Role style
-            styles['title'] = ParagraphStyle(
-                'Title',
-                fontSize=11,
-                textColor=LIGHT_GRAY,
-                spaceAfter=8,
-                fontName='Helvetica-Oblique',
-                alignment=TA_LEFT
-            )
-
-            # Section header style
-            styles['section'] = ParagraphStyle(
-                'Section',
-                fontSize=11,
-                textColor=PRIMARY_COLOR,
-                spaceBefore=10,
-                spaceAfter=4,
-                fontName='Helvetica-Bold',
-                alignment=TA_LEFT
-            )
-
-            # Subsection/Job title style
-            styles['subsection'] = ParagraphStyle(
-                'Subsection',
-                fontSize=10,
-                textColor=SECONDARY_COLOR,
-                spaceBefore=6,
-                spaceAfter=2,
-                fontName='Helvetica-Bold',
-                alignment=TA_LEFT
-            )
-
-            # Company/Date info
-            styles['info'] = ParagraphStyle(
-                'Info',
-                fontSize=9,
-                textColor=LIGHT_GRAY,
-                spaceAfter=3,
-                fontName='Helvetica-Oblique',
-                alignment=TA_LEFT
-            )
-
-            # Body text style - compact
-            styles['body'] = ParagraphStyle(
-                'Body',
-                fontSize=9,
-                textColor=SECONDARY_COLOR,
-                spaceAfter=2,
-                leading=11,
-                fontName='Helvetica',
-                alignment=TA_JUSTIFY
-            )
-
-            # Bullet style - compact
-            styles['bullet'] = ParagraphStyle(
-                'Bullet',
-                fontSize=9,
-                textColor=SECONDARY_COLOR,
-                leftIndent=12,
-                spaceAfter=1,
-                leading=11,
-                fontName='Helvetica',
-                bulletIndent=0,
-                alignment=TA_LEFT
-            )
-
-            # Skill item style
-            styles['skill'] = ParagraphStyle(
-                'Skill',
-                fontSize=9,
-                textColor=SECONDARY_COLOR,
-                spaceAfter=1,
-                leading=11,
-                fontName='Helvetica',
-                alignment=TA_LEFT
-            )
-
-            # Skill label style
-            styles['skill_label'] = ParagraphStyle(
-                'SkillLabel',
-                fontSize=9,
-                textColor=PRIMARY_COLOR,
-                fontName='Helvetica-Bold',
-                alignment=TA_LEFT
-            )
-
-            # Build content
-            story = []
-
-            # === HEADER ===
-            story.append(Paragraph(name, styles['name']))
-
-            # Adapted title
-            if job_title:
-                adapted_title = f"CV adapté pour : {job_title}"
-                if company:
-                    adapted_title += f" — {company}"
-                story.append(Paragraph(adapted_title, styles['title']))
-
-            # Horizontal line under header
-            story.append(HRFlowable(width="100%", thickness=2, color=PRIMARY_COLOR, spaceAfter=8))
-
-            # === PARSE CV CONTENT ===
-            lines = cv_content.split('\n')
-            current_section = None
-            section_content = []
-
-            def is_section_header(line):
-                """Detect section headers"""
-                line_clean = line.strip().rstrip(':')
-                section_keywords = [
-                    'PROFIL', 'PROFILE', 'RÉSUMÉ', 'SUMMARY', 'OBJECTIF',
-                    'COMPÉTENCES', 'SKILLS', 'COMPETENCES', 'COMPÉTENCES CLÉS',
-                    'EXPÉRIENCE', 'EXPERIENCE', 'EXPÉRIENCES', 'PARCOURS',
-                    'FORMATION', 'EDUCATION', 'ÉTUDES', 'DIPLÔMES',
-                    'CENTRES', 'INTÉRÊTS', 'INTERESTS', 'HOBBIES', 'LOISIRS',
-                    'LANGUES', 'LANGUAGES', 'CERTIFICATIONS', 'PROJETS', 'PROJECTS',
-                    'COORDONNÉES', 'CONTACT', 'INFORMATIONS'
-                ]
-                return (
-                    line_clean.isupper() or
-                    any(kw in line_clean.upper() for kw in section_keywords) or
-                    (len(line_clean) < 40 and line.strip().endswith(':'))
-                )
-
-            def is_job_entry(line):
-                """Detect job/education entry headers"""
-                # Contains year pattern like 2020-2025 or 2024
-                import re
-                return bool(re.search(r'\b(19|20)\d{2}\b', line)) and len(line) < 100
-
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-
-                # Escape HTML
-                line_safe = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-
-                if is_section_header(line):
-                    # New section
-                    story.append(Spacer(1, 6))
-                    section_title = line.rstrip(':').upper()
-                    story.append(Paragraph(section_title, styles['section']))
-                    story.append(HRFlowable(width="25%", thickness=1, color=PRIMARY_COLOR, spaceAfter=4))
-                    current_section = section_title
-
-                elif is_job_entry(line) and current_section and ('EXPÉRIENCE' in current_section.upper() or 'EXPERIENCE' in current_section.upper() or 'FORMATION' in current_section.upper() or 'EDUCATION' in current_section.upper()):
-                    # Job or education entry
-                    story.append(Spacer(1, 4))
-                    story.append(Paragraph(line_safe, styles['subsection']))
-
-                elif line.startswith('•') or line.startswith('-') or line.startswith('*') or line.startswith('–'):
-                    # Bullet point
-                    text = line.lstrip('•-*– ').strip()
-                    story.append(Paragraph(f"• {text}", styles['bullet']))
-
-                elif ':' in line and len(line.split(':')[0]) < 25 and current_section and 'COMPÉTENCE' in current_section.upper():
-                    # Skill entry like "Langages: C, C++, Python"
-                    parts = line.split(':', 1)
-                    if len(parts) == 2:
-                        label = parts[0].strip()
-                        value = parts[1].strip()
-                        # Create a mini table for alignment
-                        skill_data = [[
-                            Paragraph(f"<b>{label}</b>", styles['skill_label']),
-                            Paragraph(value, styles['skill'])
-                        ]]
-                        skill_table = Table(skill_data, colWidths=[3*cm, 14*cm])
-                        skill_table.setStyle(TableStyle([
-                            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                            ('LEFTPADDING', (0, 0), (-1, -1), 0),
-                            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-                            ('TOPPADDING', (0, 0), (-1, -1), 1),
-                            ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
-                        ]))
-                        story.append(skill_table)
-                    else:
-                        story.append(Paragraph(line_safe, styles['body']))
-                else:
-                    # Regular text
-                    story.append(Paragraph(line_safe, styles['body']))
-
-            # Build PDF
-            doc.build(story)
-
-            # Read and encode PDF
-            with open(tmp_path, "rb") as f:
-                pdf_bytes = f.read()
-
-            # Clean up
-            os.unlink(tmp_path)
-
-            # Encode to base64
-            pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
-
-            return {
-                "success": True,
-                "pdf_base64": pdf_base64,
-                "size": len(pdf_bytes)
-            }
+            if pdf_bytes:
+                return {
+                    "success": True,
+                    "pdf_base64": base64.b64encode(pdf_bytes).decode('utf-8'),
+                    "size": len(pdf_bytes),
+                    "latex": latex_code  # Include LaTeX source for debugging
+                }
+            else:
+                return {"success": False, "error": "LaTeX compilation failed", "pdf_base64": ""}
 
         except Exception as e:
             traceback.print_exc()
-            return {
-                "success": False,
-                "error": str(e),
-                "pdf_base64": ""
-            }
+            return {"success": False, "error": str(e), "pdf_base64": ""}
+
+    def _parse_cv_sections(self, cv_content, default_name, default_title):
+        """Parse CV content into structured sections."""
+        lines = cv_content.strip().split('\n')
+        sections = {
+            'name': default_name,
+            'title': default_title,
+            'profil': [],
+            'competences': [],
+            'experience': [],
+            'formation': [],
+            'interets': []
+        }
+
+        current_section = None
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Section tags [SECTION] or SECTION headers
+            if line.startswith('[') and line.endswith(']'):
+                current_section = line[1:-1].lower()
+            elif line.isupper() and len(line) < 40:
+                section_map = {
+                    'NOM': 'name', 'TITRE': 'title', 'PROFIL': 'profil', 'PROFILE': 'profil',
+                    'COMPETENCES': 'competences', 'COMPÉTENCES': 'competences', 'COMPÉTENCES CLÉS': 'competences',
+                    'EXPERIENCE': 'experience', 'EXPÉRIENCE': 'experience', 'EXPÉRIENCE PROFESSIONNELLE': 'experience',
+                    'FORMATION': 'formation', 'EDUCATION': 'formation',
+                    'INTERETS': 'interets', 'INTÉRÊTS': 'interets', 'CENTRES D\'INTÉRÊT': 'interets'
+                }
+                current_section = section_map.get(line.replace(':', ''), current_section)
+            elif current_section:
+                if current_section == 'name':
+                    sections['name'] = line
+                elif current_section == 'title':
+                    sections['title'] = line
+                elif current_section in sections and isinstance(sections[current_section], list):
+                    sections[current_section].append(line)
+
+        return sections
+
+    def _latex_escape(self, text):
+        """Escape special LaTeX characters."""
+        if not text:
+            return ""
+        replacements = [
+            ('\\', '\\textbackslash{}'),
+            ('&', '\\&'),
+            ('%', '\\%'),
+            ('$', '\\$'),
+            ('#', '\\#'),
+            ('_', '\\_'),
+            ('{', '\\{'),
+            ('}', '\\}'),
+            ('~', '\\textasciitilde{}'),
+            ('^', '\\textasciicircum{}'),
+        ]
+        for old, new in replacements:
+            text = text.replace(old, new)
+        return text
+
+    def _generate_latex(self, sections, job_title, company):
+        """Generate ModernCV LaTeX code."""
+
+        # Parse name
+        name_parts = sections['name'].split()
+        if len(name_parts) >= 2:
+            firstname = self._latex_escape(name_parts[0])
+            lastname = self._latex_escape(' '.join(name_parts[1:]))
+        else:
+            firstname = self._latex_escape(sections['name'])
+            lastname = ""
+
+        title = self._latex_escape(sections['title'] or job_title)
+
+        # Build competences
+        competences_latex = ""
+        for line in sections['competences']:
+            if '|' in line:
+                parts = line.split('|', 1)
+                label = self._latex_escape(parts[0].strip())
+                value = self._latex_escape(parts[1].strip())
+                competences_latex += f"\\cvitem{{{label}}}{{{value}}}\n"
+            elif ':' in line:
+                parts = line.split(':', 1)
+                label = self._latex_escape(parts[0].strip())
+                value = self._latex_escape(parts[1].strip())
+                competences_latex += f"\\cvitem{{{label}}}{{{value}}}\n"
+
+        # Build experience
+        experience_latex = ""
+        current_entry = None
+        current_bullets = []
+
+        for line in sections['experience']:
+            if '|' in line and not line.startswith('-'):
+                # Save previous entry
+                if current_entry:
+                    experience_latex += self._format_cventry(current_entry, current_bullets)
+                    current_bullets = []
+                # Parse: 2023-2025|Poste|Entreprise|Lieu
+                parts = [p.strip() for p in line.split('|')]
+                current_entry = {
+                    'dates': self._latex_escape(parts[0]) if len(parts) > 0 else "",
+                    'title': self._latex_escape(parts[1]) if len(parts) > 1 else "",
+                    'company': self._latex_escape(parts[2]) if len(parts) > 2 else "",
+                    'location': self._latex_escape(parts[3]) if len(parts) > 3 else "",
+                }
+            elif line.startswith('-') or line.startswith('•'):
+                bullet = line.lstrip('-•* ').strip()
+                current_bullets.append(self._latex_escape(bullet))
+
+        if current_entry:
+            experience_latex += self._format_cventry(current_entry, current_bullets)
+
+        # Build formation
+        formation_latex = ""
+        for line in sections['formation']:
+            if '|' in line:
+                parts = [p.strip() for p in line.split('|')]
+                dates = self._latex_escape(parts[0]) if len(parts) > 0 else ""
+                diplome = self._latex_escape(parts[1]) if len(parts) > 1 else ""
+                ecole = self._latex_escape(parts[2]) if len(parts) > 2 else ""
+                detail = self._latex_escape(parts[3]) if len(parts) > 3 else ""
+                formation_latex += f"\\cventry{{{dates}}}{{{diplome}}}{{{ecole}}}{{}}{{}}{{{detail}}}\n"
+
+        # Build profil
+        profil_text = ' '.join([self._latex_escape(p) for p in sections['profil']])
+
+        # Build interets
+        interets_text = ', '.join([self._latex_escape(i) for i in sections['interets']])
+
+        # Generate full LaTeX document
+        latex = f'''\\documentclass[a4paper,11pt]{{moderncv}}
+\\moderncvstyle{{classic}}
+\\moderncvcolor{{blue}}
+
+\\usepackage[utf8]{{inputenc}}
+\\usepackage[T1]{{fontenc}}
+\\usepackage[scale=0.88]{{geometry}}
+\\usepackage{{hyperref}}
+
+\\name{{{firstname}}}{{{lastname}}}
+\\title{{{title}}}
+
+\\begin{{document}}
+\\makecvtitle
+
+\\section{{Profil}}
+{profil_text}
+
+\\section{{Compétences clés}}
+{competences_latex}
+
+\\section{{Expérience professionnelle}}
+{experience_latex}
+
+\\section{{Formation}}
+{formation_latex}
+
+\\section{{Centres d'intérêt}}
+{interets_text}
+
+\\end{{document}}
+'''
+        return latex
+
+    def _format_cventry(self, entry, bullets):
+        """Format a cventry with bullet points."""
+        bullets_latex = ""
+        if bullets:
+            bullets_latex = "\\begin{itemize}\n"
+            for b in bullets:
+                bullets_latex += f"\\item {b}\n"
+            bullets_latex += "\\end{itemize}"
+
+        return f"""\\cventry{{{entry['dates']}}}{{{entry['title']}}}{{{entry['company']}}}{{{entry['location']}}}{{}}{{
+{bullets_latex}}}
+
+"""
+
+    def _compile_latex(self, latex_code):
+        """Compile LaTeX to PDF using pdflatex."""
+        import shutil
+
+        # Create temp directory
+        temp_dir = tempfile.mkdtemp()
+        tex_file = os.path.join(temp_dir, "cv.tex")
+        pdf_file = os.path.join(temp_dir, "cv.pdf")
+
+        try:
+            # Write LaTeX file
+            with open(tex_file, 'w', encoding='utf-8') as f:
+                f.write(latex_code)
+
+            # Compile with pdflatex (run twice for references)
+            for _ in range(2):
+                result = subprocess.run(
+                    ['pdflatex', '-interaction=nonstopmode', '-output-directory', temp_dir, tex_file],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+
+            # Check if PDF was created
+            if os.path.exists(pdf_file):
+                with open(pdf_file, 'rb') as f:
+                    return f.read()
+            else:
+                print(f"LaTeX compilation failed. Log:\n{result.stdout}\n{result.stderr}")
+                return None
+
+        except subprocess.TimeoutExpired:
+            print("LaTeX compilation timeout")
+            return None
+        except Exception as e:
+            print(f"LaTeX compilation error: {e}")
+            return None
+        finally:
+            # Cleanup
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _escape(self, text):
+        """Escape HTML special characters (for reportlab fallback)."""
+        return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
     def extract_json(self, response: str) -> dict:
         """Extract JSON from Claude's response."""

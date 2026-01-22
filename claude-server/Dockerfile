@@ -1,13 +1,19 @@
 # Extend the existing claudecode image
 FROM claudecode:latest
 
-# Install Python and pip (if not already present)
+# Install Python, pip, and LaTeX
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
+    texlive-latex-base \
+    texlive-latex-recommended \
+    texlive-latex-extra \
+    texlive-fonts-recommended \
+    texlive-lang-french \
+    latexmk \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PDF libraries (extraction + generation)
+# Install PDF libraries (extraction + fallback generation)
 RUN pip3 install --no-cache-dir --break-system-packages pdfplumber reportlab
 
 # Copy the HTTP server
