@@ -7,8 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PDF extraction library
-RUN pip3 install --no-cache-dir --break-system-packages pdfplumber
+# Install PDF libraries (extraction + generation)
+RUN pip3 install --no-cache-dir --break-system-packages pdfplumber reportlab
 
 # Copy the HTTP server
 COPY server.py /app/server.py

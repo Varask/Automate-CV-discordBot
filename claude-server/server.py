@@ -25,6 +25,21 @@ except ImportError:
     except ImportError:
         print("Warning: No PDF library available. Install pdfplumber or PyPDF2 for PDF extraction.")
 
+# PDF generation
+PDF_GENERATOR = None
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.lib.colors import HexColor
+    PDF_GENERATOR = "reportlab"
+except ImportError:
+    print("Warning: reportlab not available. Install reportlab for PDF generation.")
+
 PORT = int(os.environ.get("PORT", 8080))
 
 class ClaudeHandler(BaseHTTPRequestHandler):
@@ -76,6 +91,8 @@ class ClaudeHandler(BaseHTTPRequestHandler):
                 result = self.handle_generate_cv(data)
             elif path == "/extract-pdf":
                 result = self.handle_extract_pdf(data)
+            elif path == "/generate-pdf":
+                result = self.handle_generate_pdf(data)
             else:
                 self._send_error("Not found", 404)
                 return
@@ -238,7 +255,11 @@ IMPORTANT: Retourne UNIQUEMENT le JSON, sans markdown, sans commentaires.'''
         """Extract text from a PDF file."""
         pdf_base64 = data.get("pdf_base64", "")
         if not pdf_base64:
-            raise ValueError("Missing 'pdf_base64' field")
+            return {
+                "success": False,
+                "error": "Missing 'pdf_base64' field",
+                "text": ""
+            }
 
         if not PDF_EXTRACTOR:
             return {
@@ -290,6 +311,156 @@ IMPORTANT: Retourne UNIQUEMENT le JSON, sans markdown, sans commentaires.'''
                 "text": ""
             }
 
+    def handle_generate_pdf(self, data: dict) -> dict:
+        """Generate a PDF from CV content."""
+        cv_content = data.get("cv_content", "")
+        name = data.get("name", "Candidat")
+        job_title = data.get("job_title", "")
+        company = data.get("company", "")
+
+        if not cv_content:
+            return {
+                "success": False,
+                "error": "Missing 'cv_content' field",
+                "pdf_base64": ""
+            }
+
+        if not PDF_GENERATOR:
+            return {
+                "success": False,
+                "error": "PDF generator not available. Install reportlab.",
+                "pdf_base64": ""
+            }
+
+        try:
+            # Create temp file for PDF
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp_path = tmp.name
+
+            # Create PDF document
+            doc = SimpleDocTemplate(
+                tmp_path,
+                pagesize=A4,
+                rightMargin=2*cm,
+                leftMargin=2*cm,
+                topMargin=2*cm,
+                bottomMargin=2*cm
+            )
+
+            # Define styles
+            styles = getSampleStyleSheet()
+
+            # Custom styles
+            title_style = ParagraphStyle(
+                'CVTitle',
+                parent=styles['Heading1'],
+                fontSize=18,
+                spaceAfter=6,
+                textColor=HexColor('#1a365d'),
+                alignment=TA_CENTER
+            )
+
+            subtitle_style = ParagraphStyle(
+                'CVSubtitle',
+                parent=styles['Normal'],
+                fontSize=11,
+                spaceAfter=20,
+                textColor=HexColor('#4a5568'),
+                alignment=TA_CENTER
+            )
+
+            section_style = ParagraphStyle(
+                'CVSection',
+                parent=styles['Heading2'],
+                fontSize=12,
+                spaceBefore=15,
+                spaceAfter=8,
+                textColor=HexColor('#2c5282'),
+                borderPadding=(0, 0, 3, 0)
+            )
+
+            body_style = ParagraphStyle(
+                'CVBody',
+                parent=styles['Normal'],
+                fontSize=10,
+                spaceAfter=6,
+                leading=14
+            )
+
+            bullet_style = ParagraphStyle(
+                'CVBullet',
+                parent=body_style,
+                leftIndent=20,
+                bulletIndent=10
+            )
+
+            # Build content
+            story = []
+
+            # Header
+            story.append(Paragraph(name, title_style))
+            if job_title:
+                subtitle = f"CV adapté pour : {job_title}"
+                if company:
+                    subtitle += f" - {company}"
+                story.append(Paragraph(subtitle, subtitle_style))
+
+            story.append(HRFlowable(width="100%", thickness=1, color=HexColor('#e2e8f0')))
+            story.append(Spacer(1, 10))
+
+            # Parse and add content
+            lines = cv_content.split('\n')
+            current_section = None
+
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Escape HTML special characters
+                line = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+                # Detect sections (lines in UPPERCASE or ending with :)
+                if line.isupper() or (len(line) < 50 and line.endswith(':')):
+                    story.append(Spacer(1, 5))
+                    story.append(Paragraph(line.rstrip(':'), section_style))
+                    story.append(HRFlowable(width="30%", thickness=0.5, color=HexColor('#cbd5e0')))
+                    current_section = line
+                # Bullet points
+                elif line.startswith('•') or line.startswith('-') or line.startswith('*'):
+                    text = line.lstrip('•-* ')
+                    story.append(Paragraph(f"• {text}", bullet_style))
+                # Regular text
+                else:
+                    story.append(Paragraph(line, body_style))
+
+            # Build PDF
+            doc.build(story)
+
+            # Read and encode PDF
+            with open(tmp_path, "rb") as f:
+                pdf_bytes = f.read()
+
+            # Clean up
+            os.unlink(tmp_path)
+
+            # Encode to base64
+            pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+
+            return {
+                "success": True,
+                "pdf_base64": pdf_base64,
+                "size": len(pdf_bytes)
+            }
+
+        except Exception as e:
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": str(e),
+                "pdf_base64": ""
+            }
+
     def extract_json(self, response: str) -> dict:
         """Extract JSON from Claude's response."""
         response = response.strip()
@@ -330,6 +501,7 @@ def main():
     server = HTTPServer(("0.0.0.0", PORT), ClaudeHandler)
     print(f"🚀 Claude HTTP Server running on port {PORT}")
     print(f"📄 PDF Extractor: {PDF_EXTRACTOR or 'None (install pdfplumber)'}")
+    print(f"📄 PDF Generator: {PDF_GENERATOR or 'None (install reportlab)'}")
     print(f"Endpoints:")
     print(f"  GET  /health           - Health check")
     print(f"  POST /prompt           - Generic prompt")
@@ -338,6 +510,7 @@ def main():
     print(f"  POST /salary-analysis  - Salary analysis")
     print(f"  POST /generate-cv      - CV generation")
     print(f"  POST /extract-pdf      - PDF text extraction")
+    print(f"  POST /generate-pdf     - PDF generation from CV content")
 
     try:
         server.serve_forever()

@@ -283,6 +283,63 @@ impl ClaudeClient {
         let cv: GeneratedCv = serde_json::from_value(data)?;
         Ok(cv)
     }
+
+    /// Generate a PDF from CV content
+    pub async fn generate_pdf(
+        &self,
+        cv_content: &str,
+        name: &str,
+        job_title: &str,
+        company: &str,
+    ) -> Result<Vec<u8>, ClaudeError> {
+        let url = format!("{}/generate-pdf", self.base_url);
+
+        info!("Generating PDF");
+
+        let response = self.client
+            .post(&url)
+            .json(&json!({
+                "cv_content": cv_content,
+                "name": name,
+                "job_title": job_title,
+                "company": company
+            }))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ClaudeError::Api(format!("HTTP {}: {}", status, body)));
+        }
+
+        let data: serde_json::Value = response.json().await?;
+
+        if let Some(error) = data.get("error").and_then(|e| e.as_str()) {
+            if !error.is_empty() {
+                return Err(ClaudeError::Api(error.to_string()));
+            }
+        }
+
+        let success = data.get("success").and_then(|s| s.as_bool()).unwrap_or(false);
+        if !success {
+            let error_msg = data.get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("PDF generation failed");
+            return Err(ClaudeError::Api(error_msg.to_string()));
+        }
+
+        let pdf_base64 = data.get("pdf_base64")
+            .and_then(|p| p.as_str())
+            .ok_or_else(|| ClaudeError::Api("Missing pdf_base64 in response".to_string()))?;
+
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let pdf_bytes = STANDARD.decode(pdf_base64)
+            .map_err(|e| ClaudeError::Api(format!("Failed to decode PDF: {}", e)))?;
+
+        info!("PDF generated: {} bytes", pdf_bytes.len());
+        Ok(pdf_bytes)
+    }
 }
 
 // ============================================================================

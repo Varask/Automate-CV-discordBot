@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serenity::all::{
     Colour, CommandInteraction, CommandOptionType, Context, CreateCommand, CreateCommandOption,
-    CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
+    CreateAttachment, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
     EditInteractionResponse,
 };
 use tracing::{error, info, warn};
@@ -257,7 +257,7 @@ impl SlashCommand for ApplyJobCommand {
             .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
         // 4. Génération de CV personnalisé si CV disponible
-        let final_embed = if has_cv {
+        if has_cv {
             // Générer le CV adapté
             match claude_client
                 .generate_tailored_cv(&cv_content, &synthesis, &skills_match)
@@ -280,18 +280,64 @@ impl SlashCommand for ApplyJobCommand {
                         embed = embed.field("✨ Modifications apportées", adaptations, false);
                     }
 
-                    // TODO: Sauvegarder le LaTeX et générer le PDF
-                    embed = embed.field(
-                        "📥 Téléchargement",
-                        "_La génération PDF sera disponible prochainement._",
-                        false,
-                    );
+                    // Générer le PDF
+                    let cv_text = generated_cv.get_content();
+                    let username = &interaction.user.name;
 
-                    embed
+                    match claude_client
+                        .generate_pdf(cv_text, username, &synthesis.title, &synthesis.company)
+                        .await
+                    {
+                        Ok(pdf_bytes) => {
+                            // Créer le nom du fichier
+                            let safe_title = synthesis.title
+                                .chars()
+                                .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+                                .collect::<String>()
+                                .replace(' ', "_");
+                            let filename = format!("CV_{}_{}.pdf", username, safe_title);
+
+                            // Créer l'attachment
+                            let attachment = CreateAttachment::bytes(pdf_bytes, &filename);
+
+                            embed = embed.field(
+                                "📥 Téléchargement",
+                                "✅ PDF généré et joint ci-dessous!",
+                                false,
+                            );
+
+                            // Envoyer avec le PDF en pièce jointe
+                            interaction
+                                .create_followup(
+                                    &ctx.http,
+                                    serenity::all::CreateInteractionResponseFollowup::new()
+                                        .embed(embed)
+                                        .add_file(attachment),
+                                )
+                                .await
+                                .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
+                        }
+                        Err(e) => {
+                            warn!("Failed to generate PDF: {}", e);
+                            embed = embed.field(
+                                "📥 Téléchargement",
+                                format!("⚠️ Génération PDF échouée: {}\n_Le contenu texte est disponible ci-dessus._", e),
+                                false,
+                            );
+
+                            interaction
+                                .create_followup(
+                                    &ctx.http,
+                                    serenity::all::CreateInteractionResponseFollowup::new().embed(embed),
+                                )
+                                .await
+                                .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
+                        }
+                    }
                 }
                 Err(e) => {
                     error!("Failed to generate tailored CV: {}", e);
-                    CreateEmbed::new()
+                    let embed = CreateEmbed::new()
                         .title("📄 Génération de CV")
                         .description(format!("Erreur lors de la génération: {}", e))
                         .colour(COLOR_CV)
@@ -299,11 +345,19 @@ impl SlashCommand for ApplyJobCommand {
                             "💡 Conseil",
                             "Réessayez avec `/applyjob` ou vérifiez que votre CV est bien uploadé.",
                             false,
+                        );
+
+                    interaction
+                        .create_followup(
+                            &ctx.http,
+                            serenity::all::CreateInteractionResponseFollowup::new().embed(embed),
                         )
+                        .await
+                        .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
                 }
             }
         } else {
-            CreateEmbed::new()
+            let embed = CreateEmbed::new()
                 .title("📄 Génération de CV")
                 .description(
                     "Pour générer un CV personnalisé, uploadez d'abord votre CV de base.",
@@ -313,16 +367,16 @@ impl SlashCommand for ApplyJobCommand {
                     "Prochaines étapes",
                     "1. `/sendcv` - Uploader votre CV\n2. `/applyjob` - Relancer l'analyse\n3. Télécharger votre CV personnalisé",
                     false,
-                )
-        };
+                );
 
-        interaction
-            .create_followup(
-                &ctx.http,
-                serenity::all::CreateInteractionResponseFollowup::new().embed(final_embed),
-            )
-            .await
-            .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
+            interaction
+                .create_followup(
+                    &ctx.http,
+                    serenity::all::CreateInteractionResponseFollowup::new().embed(embed),
+                )
+                .await
+                .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
+        }
 
         info!("Job application analysis completed for user {}", user_id);
 
