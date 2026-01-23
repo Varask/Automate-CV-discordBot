@@ -1,7 +1,7 @@
 # Extend the existing claudecode image
 FROM claudecode:latest
 
-# Install Python, pip, and LaTeX
+# Install Python, pip, and LaTeX (including moderncv for CV generation)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     texlive-latex-recommended \
     texlive-latex-extra \
     texlive-fonts-recommended \
+    texlive-fonts-extra \
     texlive-lang-french \
     latexmk \
     && rm -rf /var/lib/apt/lists/*

@@ -349,7 +349,7 @@ Retourne UNIQUEMENT ce JSON (pas de markdown):
             }
 
     def handle_generate_pdf(self, data: dict) -> dict:
-        """Generate PDF from LaTeX using ModernCV template."""
+        """Generate PDF from CV content. Tries LaTeX first, falls back to reportlab."""
         cv_content = data.get("cv_content", "")
         name = data.get("name", "Candidat")
         job_title = data.get("job_title", "")
@@ -362,10 +362,8 @@ Retourne UNIQUEMENT ce JSON (pas de markdown):
             # Parse CV content into sections
             sections = self._parse_cv_sections(cv_content, name, job_title)
 
-            # Generate LaTeX code
+            # Try LaTeX compilation first (better quality)
             latex_code = self._generate_latex(sections, job_title, company)
-
-            # Compile LaTeX to PDF
             pdf_bytes = self._compile_latex(latex_code)
 
             if pdf_bytes:
@@ -373,10 +371,22 @@ Retourne UNIQUEMENT ce JSON (pas de markdown):
                     "success": True,
                     "pdf_base64": base64.b64encode(pdf_bytes).decode('utf-8'),
                     "size": len(pdf_bytes),
-                    "latex": latex_code  # Include LaTeX source for debugging
+                    "method": "latex"
                 }
-            else:
-                return {"success": False, "error": "LaTeX compilation failed", "pdf_base64": ""}
+
+            # Fallback to reportlab if LaTeX fails
+            print("LaTeX compilation failed, trying reportlab fallback...")
+            pdf_bytes = self._generate_pdf_reportlab(sections, job_title, company)
+
+            if pdf_bytes:
+                return {
+                    "success": True,
+                    "pdf_base64": base64.b64encode(pdf_bytes).decode('utf-8'),
+                    "size": len(pdf_bytes),
+                    "method": "reportlab"
+                }
+
+            return {"success": False, "error": "Both LaTeX and reportlab generation failed", "pdf_base64": ""}
 
         except Exception as e:
             traceback.print_exc()
@@ -604,6 +614,151 @@ Retourne UNIQUEMENT ce JSON (pas de markdown):
         finally:
             # Cleanup
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _generate_pdf_reportlab(self, sections, job_title, company):
+        """Generate PDF using reportlab as fallback."""
+        if not PDF_GENERATOR:
+            print("reportlab not available")
+            return None
+
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import cm
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, Table, TableStyle
+            from reportlab.lib.enums import TA_LEFT, TA_CENTER
+            from reportlab.lib.colors import HexColor, black
+            from io import BytesIO
+
+            buffer = BytesIO()
+            doc = SimpleDocTemplate(
+                buffer,
+                pagesize=A4,
+                rightMargin=1.5*cm,
+                leftMargin=1.5*cm,
+                topMargin=1.5*cm,
+                bottomMargin=1.5*cm
+            )
+
+            styles = getSampleStyleSheet()
+
+            # Custom styles
+            styles.add(ParagraphStyle(
+                name='CVName',
+                parent=styles['Heading1'],
+                fontSize=18,
+                textColor=HexColor('#2c3e50'),
+                spaceAfter=6,
+                alignment=TA_CENTER
+            ))
+            styles.add(ParagraphStyle(
+                name='CVTitle',
+                parent=styles['Heading2'],
+                fontSize=12,
+                textColor=HexColor('#3498db'),
+                spaceAfter=12,
+                alignment=TA_CENTER
+            ))
+            styles.add(ParagraphStyle(
+                name='CVSection',
+                parent=styles['Heading2'],
+                fontSize=12,
+                textColor=HexColor('#2980b9'),
+                spaceBefore=12,
+                spaceAfter=6,
+                borderColor=HexColor('#3498db'),
+                borderWidth=1,
+                borderPadding=3
+            ))
+            styles.add(ParagraphStyle(
+                name='CVItem',
+                parent=styles['Normal'],
+                fontSize=10,
+                spaceAfter=4
+            ))
+            styles.add(ParagraphStyle(
+                name='CVBullet',
+                parent=styles['Normal'],
+                fontSize=9,
+                leftIndent=20,
+                spaceAfter=2
+            ))
+
+            story = []
+
+            # Header: Name and Title
+            story.append(Paragraph(self._escape(sections['name']), styles['CVName']))
+            story.append(Paragraph(self._escape(sections['title'] or job_title), styles['CVTitle']))
+            story.append(HRFlowable(width="100%", thickness=1, color=HexColor('#3498db')))
+            story.append(Spacer(1, 12))
+
+            # Profil
+            if sections['profil']:
+                story.append(Paragraph("PROFIL", styles['CVSection']))
+                profil_text = ' '.join(sections['profil'])
+                story.append(Paragraph(self._escape(profil_text), styles['CVItem']))
+
+            # Compétences
+            if sections['competences']:
+                story.append(Paragraph("COMPÉTENCES", styles['CVSection']))
+                for line in sections['competences']:
+                    if '|' in line:
+                        parts = line.split('|', 1)
+                        story.append(Paragraph(
+                            f"<b>{self._escape(parts[0].strip())}</b>: {self._escape(parts[1].strip())}",
+                            styles['CVItem']
+                        ))
+                    else:
+                        story.append(Paragraph(f"• {self._escape(line)}", styles['CVItem']))
+
+            # Expérience
+            if sections['experience']:
+                story.append(Paragraph("EXPÉRIENCE PROFESSIONNELLE", styles['CVSection']))
+                current_entry = None
+                for line in sections['experience']:
+                    if '|' in line and not line.startswith('-'):
+                        parts = [p.strip() for p in line.split('|')]
+                        dates = parts[0] if len(parts) > 0 else ""
+                        title = parts[1] if len(parts) > 1 else ""
+                        company_name = parts[2] if len(parts) > 2 else ""
+                        location = parts[3] if len(parts) > 3 else ""
+                        story.append(Paragraph(
+                            f"<b>{self._escape(title)}</b> - {self._escape(company_name)} ({self._escape(dates)})",
+                            styles['CVItem']
+                        ))
+                    elif line.startswith('-') or line.startswith('•'):
+                        bullet = line.lstrip('-•* ').strip()
+                        story.append(Paragraph(f"• {self._escape(bullet)}", styles['CVBullet']))
+
+            # Formation
+            if sections['formation']:
+                story.append(Paragraph("FORMATION", styles['CVSection']))
+                for line in sections['formation']:
+                    if '|' in line:
+                        parts = [p.strip() for p in line.split('|')]
+                        dates = parts[0] if len(parts) > 0 else ""
+                        diplome = parts[1] if len(parts) > 1 else ""
+                        ecole = parts[2] if len(parts) > 2 else ""
+                        story.append(Paragraph(
+                            f"<b>{self._escape(diplome)}</b> - {self._escape(ecole)} ({self._escape(dates)})",
+                            styles['CVItem']
+                        ))
+                    else:
+                        story.append(Paragraph(self._escape(line), styles['CVItem']))
+
+            # Intérêts
+            if sections['interets']:
+                story.append(Paragraph("CENTRES D'INTÉRÊT", styles['CVSection']))
+                interets_text = ', '.join(sections['interets'])
+                story.append(Paragraph(self._escape(interets_text), styles['CVItem']))
+
+            doc.build(story)
+            return buffer.getvalue()
+
+        except Exception as e:
+            print(f"reportlab PDF generation failed: {e}")
+            traceback.print_exc()
+            return None
 
     def _escape(self, text):
         """Escape HTML special characters (for reportlab fallback)."""
