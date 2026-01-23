@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use serenity::all::{
-    Colour, CommandInteraction, CommandOptionType, Context, CreateCommand, CreateCommandOption,
-    CreateAttachment, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
-    EditInteractionResponse,
+    ButtonStyle, ChannelType, Colour, CommandInteraction, CommandOptionType, Context,
+    CreateActionRow, CreateButton, CreateCommand, CreateCommandOption, CreateAttachment,
+    CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage,
+    CreateThread, EditInteractionResponse,
 };
 use tracing::{error, info, warn};
 
@@ -16,6 +17,7 @@ const COLOR_SYNTHESIS: Colour = Colour::from_rgb(46, 204, 113);   // Vert
 const COLOR_SKILLS: Colour = Colour::from_rgb(241, 196, 15);      // Jaune
 const COLOR_SALARY: Colour = Colour::from_rgb(230, 126, 34);      // Orange
 const COLOR_CV: Colour = Colour::from_rgb(52, 152, 219);          // Bleu
+const COLOR_TRACKING: Colour = Colour::from_rgb(155, 89, 182);    // Violet
 
 // ============================================================================
 // ApplyJob Command
@@ -103,6 +105,7 @@ impl SlashCommand for ApplyJobCommand {
             .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
         let user_id = interaction.user.id;
+        let channel_id = interaction.channel_id;
 
         // Get options
         let text_description = get_optional_string_option(interaction, "description");
@@ -141,22 +144,26 @@ impl SlashCommand for ApplyJobCommand {
             }
         };
 
-        // Récupérer le client Claude
-        let claude_client = {
+        // Récupérer le client Claude et la DB
+        let (claude_client, db) = {
             let data = ctx.data.read().await;
-            data.get::<ClaudeClientKey>()
+            let claude = data.get::<ClaudeClientKey>()
                 .ok_or_else(|| CommandError::Internal("Claude client not found".to_string()))?
-                .clone()
+                .clone();
+            let db = data.get::<Database>()
+                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
+                .clone();
+            (claude, db)
         };
 
         info!("Processing job application for user {}", user_id);
 
-        // Envoyer un message initial
+        // Envoyer un embed de suivi initial dans le canal principal
+        let initial_tracking_embed = build_tracking_embed_progress("Synthèse de l'offre...", None, None);
         interaction
             .edit_response(
                 &ctx.http,
-                EditInteractionResponse::new()
-                    .content("🔄 **Analyse en cours...**\n\n⏳ Synthèse de l'offre..."),
+                EditInteractionResponse::new().embed(initial_tracking_embed),
             )
             .await
             .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
@@ -175,32 +182,74 @@ impl SlashCommand for ApplyJobCommand {
             }
         };
 
-        // Envoyer l'embed de synthèse (Vert)
-        let synthesis_embed = build_synthesis_embed(&synthesis);
+        // Créer le thread pour les résultats détaillés
+        let thread_name = format!("📋 {} - {}", synthesis.company, synthesis.title);
+        let thread_name = if thread_name.len() > 100 {
+            format!("{}...", &thread_name[..97])
+        } else {
+            thread_name
+        };
+
+        let thread = channel_id
+            .create_thread(
+                &ctx.http,
+                CreateThread::new(thread_name.clone())
+                    .kind(ChannelType::PublicThread)
+                    .auto_archive_duration(serenity::all::AutoArchiveDuration::OneDay),
+            )
+            .await
+            .map_err(|e| CommandError::Internal(format!("Failed to create thread: {}", e)))?;
+
+        info!("Created thread {} for job application", thread.id);
+
+        // Sauvegarder le thread_id en DB
+        if let Err(e) = db.update_application_thread(application_id, thread.id.get() as i64) {
+            warn!("Failed to save thread_id: {}", e);
+        }
+
+        // Mettre à jour l'embed de suivi avec le lien vers le thread
+        let tracking_embed = build_tracking_embed_progress(
+            "Analyse des compétences...",
+            Some(&synthesis),
+            Some(thread.id.get()),
+        );
         interaction
             .edit_response(
                 &ctx.http,
-                EditInteractionResponse::new()
-                    .content("✅ Synthèse terminée\n⏳ Analyse des compétences...")
-                    .embed(synthesis_embed),
+                EditInteractionResponse::new().embed(tracking_embed),
             )
             .await
             .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
-        // 2. Récupérer le CV de l'utilisateur depuis la DB
-        let db = {
-            let data = ctx.data.read().await;
-            data.get::<Database>()
-                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone()
-        };
+        // Envoyer l'embed de synthèse dans le thread
+        let synthesis_embed = build_synthesis_embed(&synthesis);
+        thread
+            .send_message(&ctx.http, CreateMessage::new().embed(synthesis_embed))
+            .await
+            .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
+        // 2. Récupérer le CV de l'utilisateur depuis la DB
         let user_cv = db.get_active_cv(user_id.get() as i64)
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
+        // Sauvegarder la candidature en DB
+        let cv_id = user_cv.as_ref().map(|cv| cv.id).unwrap_or(0);
+        let application_id = db
+            .create_application(
+                user_id.get() as i64,
+                cv_id,
+                Some(&synthesis.title),
+                Some(&synthesis.company),
+                Some(&synthesis.location),
+                None, // job_url
+                &job_description,
+            )
+            .map_err(|e| CommandError::Internal(format!("Failed to save application: {}", e)))?;
+
+        info!("Created application {} for user {}", application_id, user_id);
+
         let cv_content = match &user_cv {
             Some(cv) => {
-                // Priorité au texte extrait (stocké en DB)
                 if let Some(ref extracted) = cv.extracted_text {
                     if !extracted.is_empty() {
                         info!("Using extracted text for CV {} (user {})", cv.id, user_id);
@@ -210,7 +259,6 @@ impl SlashCommand for ApplyJobCommand {
                         format!("CV: {} (texte non disponible - réuploadez votre CV)", cv.original_name)
                     }
                 } else {
-                    // Fallback: essayer de lire le fichier (pour les fichiers texte)
                     match tokio::fs::read_to_string(&cv.file_path).await {
                         Ok(content) => {
                             info!("Read CV file directly for user {}", user_id);
@@ -239,7 +287,6 @@ impl SlashCommand for ApplyJobCommand {
             Ok(s) => s,
             Err(e) => {
                 error!("Failed to match skills: {}", e);
-                // Continuer avec des valeurs par défaut
                 let default_highlight = if has_cv {
                     "Analyse en cours...".to_string()
                 } else {
@@ -255,13 +302,24 @@ impl SlashCommand for ApplyJobCommand {
             }
         };
 
-        // Créer un channel followup pour envoyer plusieurs embeds
-        let skills_embed = build_skills_embed(&skills_match);
+        // Mettre à jour le tracking
+        let tracking_embed = build_tracking_embed_progress(
+            "Analyse salariale...",
+            Some(&synthesis),
+            Some(thread.id.get()),
+        );
         interaction
-            .create_followup(
+            .edit_response(
                 &ctx.http,
-                serenity::all::CreateInteractionResponseFollowup::new().embed(skills_embed),
+                EditInteractionResponse::new().embed(tracking_embed),
             )
+            .await
+            .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
+
+        // Envoyer l'embed des compétences dans le thread
+        let skills_embed = build_skills_embed(&skills_match);
+        thread
+            .send_message(&ctx.http, CreateMessage::new().embed(skills_embed))
             .await
             .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
@@ -286,18 +344,29 @@ impl SlashCommand for ApplyJobCommand {
             }
         };
 
+        // Envoyer l'embed salarial dans le thread
         let salary_embed = build_salary_embed(&salary_analysis);
-        interaction
-            .create_followup(
-                &ctx.http,
-                serenity::all::CreateInteractionResponseFollowup::new().embed(salary_embed),
-            )
+        thread
+            .send_message(&ctx.http, CreateMessage::new().embed(salary_embed))
             .await
             .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
         // 4. Génération de CV personnalisé si CV disponible
-        if has_cv {
-            // Générer le CV adapté
+        let cv_generated = if has_cv {
+            // Mettre à jour le tracking
+            let tracking_embed = build_tracking_embed_progress(
+                "Génération du CV personnalisé...",
+                Some(&synthesis),
+                Some(thread.id.get()),
+            );
+            interaction
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new().embed(tracking_embed),
+                )
+                .await
+                .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
+
             match claude_client
                 .generate_tailored_cv(&cv_content, &synthesis, &skills_match)
                 .await
@@ -319,7 +388,6 @@ impl SlashCommand for ApplyJobCommand {
                         embed = embed.field("✨ Modifications apportées", adaptations, false);
                     }
 
-                    // Générer le PDF
                     let cv_text = generated_cv.get_content();
                     let username = &interaction.user.name;
 
@@ -328,15 +396,12 @@ impl SlashCommand for ApplyJobCommand {
                         .await
                     {
                         Ok(pdf_bytes) => {
-                            // Créer le nom du fichier
                             let safe_title = synthesis.title
                                 .chars()
                                 .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
                                 .collect::<String>()
                                 .replace(' ', "_");
                             let filename = format!("CV_{}_{}.pdf", username, safe_title);
-
-                            // Créer l'attachment
                             let attachment = CreateAttachment::bytes(pdf_bytes, &filename);
 
                             embed = embed.field(
@@ -345,32 +410,28 @@ impl SlashCommand for ApplyJobCommand {
                                 false,
                             );
 
-                            // Envoyer avec le PDF en pièce jointe
-                            interaction
-                                .create_followup(
+                            thread
+                                .send_message(
                                     &ctx.http,
-                                    serenity::all::CreateInteractionResponseFollowup::new()
-                                        .embed(embed)
-                                        .add_file(attachment),
+                                    CreateMessage::new().embed(embed).add_file(attachment),
                                 )
                                 .await
                                 .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
+                            true
                         }
                         Err(e) => {
                             warn!("Failed to generate PDF: {}", e);
                             embed = embed.field(
                                 "📥 Téléchargement",
-                                format!("⚠️ Génération PDF échouée: {}\n_Le contenu texte est disponible ci-dessus._", e),
+                                format!("⚠️ Génération PDF échouée: {}", e),
                                 false,
                             );
 
-                            interaction
-                                .create_followup(
-                                    &ctx.http,
-                                    serenity::all::CreateInteractionResponseFollowup::new().embed(embed),
-                                )
+                            thread
+                                .send_message(&ctx.http, CreateMessage::new().embed(embed))
                                 .await
                                 .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
+                            true
                         }
                     }
                 }
@@ -386,21 +447,17 @@ impl SlashCommand for ApplyJobCommand {
                             false,
                         );
 
-                    interaction
-                        .create_followup(
-                            &ctx.http,
-                            serenity::all::CreateInteractionResponseFollowup::new().embed(embed),
-                        )
+                    thread
+                        .send_message(&ctx.http, CreateMessage::new().embed(embed))
                         .await
                         .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
+                    false
                 }
             }
         } else {
             let embed = CreateEmbed::new()
                 .title("📄 Génération de CV")
-                .description(
-                    "Pour générer un CV personnalisé, uploadez d'abord votre CV de base.",
-                )
+                .description("Pour générer un CV personnalisé, uploadez d'abord votre CV de base.")
                 .colour(COLOR_CV)
                 .field(
                     "Prochaines étapes",
@@ -408,14 +465,45 @@ impl SlashCommand for ApplyJobCommand {
                     false,
                 );
 
-            interaction
-                .create_followup(
-                    &ctx.http,
-                    serenity::all::CreateInteractionResponseFollowup::new().embed(embed),
-                )
+            thread
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
                 .await
                 .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
+            false
+        };
+
+        // Mettre à jour l'analyse en DB
+        if let Err(e) = db.update_application_analysis(
+            application_id,
+            &synthesis.summary,
+            &serde_json::to_string(&synthesis.key_requirements).unwrap_or_default(),
+            &serde_json::to_string(&skills_match.matched_skills).unwrap_or_default(),
+            &serde_json::to_string(&skills_match.missing_skills).unwrap_or_default(),
+            skills_match.match_score as i32,
+        ) {
+            warn!("Failed to update application analysis: {}", e);
         }
+
+        // Mettre à jour l'embed de suivi final dans le canal principal avec les boutons
+        let final_tracking_embed = build_tracking_embed_complete(
+            &synthesis,
+            skills_match.match_score,
+            has_cv,
+            cv_generated,
+            thread.id.get(),
+            application_id,
+            "generated",
+        );
+        let action_rows = build_status_buttons(application_id, "generated");
+        interaction
+            .edit_response(
+                &ctx.http,
+                EditInteractionResponse::new()
+                    .embed(final_tracking_embed)
+                    .components(action_rows),
+            )
+            .await
+            .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
         info!("Job application analysis completed for user {}", user_id);
 
@@ -566,6 +654,203 @@ fn build_progress_bar(value: u32, max: u32) -> String {
     let filled = "█".repeat(percentage.min(10));
     let empty = "░".repeat(10 - percentage.min(10));
     format!("{}{}", filled, empty)
+}
+
+fn build_tracking_embed_progress(
+    current_step: &str,
+    synthesis: Option<&JobSynthesis>,
+    thread_id: Option<u64>,
+) -> CreateEmbed {
+    let mut embed = CreateEmbed::new()
+        .title("🔄 ANALYSE EN COURS")
+        .colour(COLOR_TRACKING);
+
+    if let Some(s) = synthesis {
+        embed = embed
+            .field("🏢 Entreprise", &s.company, true)
+            .field("💼 Poste", &s.title, true);
+    }
+
+    embed = embed.field("⏳ Étape actuelle", current_step, false);
+
+    if let Some(tid) = thread_id {
+        embed = embed.field(
+            "📋 Détails",
+            format!("Consultez le thread <#{}> pour les résultats détaillés", tid),
+            false,
+        );
+    }
+
+    embed
+}
+
+fn build_tracking_embed_complete(
+    synthesis: &JobSynthesis,
+    match_score: u32,
+    has_cv: bool,
+    cv_generated: bool,
+    thread_id: u64,
+    application_id: i64,
+    status: &str,
+) -> CreateEmbed {
+    let score_bar = build_progress_bar(match_score, 100);
+    let score_emoji = if match_score >= 70 {
+        "🟢"
+    } else if match_score >= 40 {
+        "🟡"
+    } else {
+        "🔴"
+    };
+
+    let cv_status = if cv_generated {
+        "✅ CV personnalisé généré"
+    } else if has_cv {
+        "⚠️ Erreur de génération"
+    } else {
+        "❌ Aucun CV (utilisez `/sendcv`)"
+    };
+
+    let status_display = get_status_display(status);
+
+    CreateEmbed::new()
+        .title("📊 SUIVI DE CANDIDATURE")
+        .colour(COLOR_TRACKING)
+        .field("🏢 Entreprise", &synthesis.company, true)
+        .field("💼 Poste", &synthesis.title, true)
+        .field("📍 Lieu", &synthesis.location, true)
+        .field(
+            "🎯 Score de compatibilité",
+            format!("{} {} **{}%**", score_emoji, score_bar, match_score),
+            false,
+        )
+        .field("📄 CV", cv_status, true)
+        .field("📌 Statut", status_display, true)
+        .field(
+            "📋 Résultats détaillés",
+            format!("👉 <#{}>", thread_id),
+            false,
+        )
+        .footer(serenity::all::CreateEmbedFooter::new(format!("ID: {}", application_id)))
+}
+
+fn get_status_display(status: &str) -> &'static str {
+    match status {
+        "generated" => "📝 Générée",
+        "applied" => "📤 Postulée",
+        "interview" => "🗓️ Entretien",
+        "offer" => "🎉 Offre reçue",
+        "rejected" => "❌ Refusée",
+        "accepted" => "✅ Acceptée",
+        _ => "❓ Inconnu",
+    }
+}
+
+fn build_status_buttons(application_id: i64, current_status: &str) -> Vec<CreateActionRow> {
+    let buttons_row1 = CreateActionRow::Buttons(vec![
+        CreateButton::new(format!("status_{}_{}", application_id, "applied"))
+            .label("📤 Postulée")
+            .style(if current_status == "applied" {
+                ButtonStyle::Success
+            } else {
+                ButtonStyle::Secondary
+            })
+            .disabled(current_status == "applied"),
+        CreateButton::new(format!("status_{}_{}", application_id, "interview"))
+            .label("🗓️ Entretien")
+            .style(if current_status == "interview" {
+                ButtonStyle::Success
+            } else {
+                ButtonStyle::Primary
+            })
+            .disabled(current_status == "interview"),
+        CreateButton::new(format!("status_{}_{}", application_id, "offer"))
+            .label("🎉 Offre")
+            .style(if current_status == "offer" {
+                ButtonStyle::Success
+            } else {
+                ButtonStyle::Primary
+            })
+            .disabled(current_status == "offer"),
+    ]);
+
+    let buttons_row2 = CreateActionRow::Buttons(vec![
+        CreateButton::new(format!("status_{}_{}", application_id, "accepted"))
+            .label("✅ Acceptée")
+            .style(if current_status == "accepted" {
+                ButtonStyle::Success
+            } else {
+                ButtonStyle::Success
+            })
+            .disabled(current_status == "accepted"),
+        CreateButton::new(format!("status_{}_{}", application_id, "rejected"))
+            .label("❌ Refusée")
+            .style(if current_status == "rejected" {
+                ButtonStyle::Danger
+            } else {
+                ButtonStyle::Danger
+            })
+            .disabled(current_status == "rejected"),
+    ]);
+
+    vec![buttons_row1, buttons_row2]
+}
+
+/// Reconstruit l'embed de suivi à partir d'une application existante
+pub fn rebuild_tracking_embed_from_status(
+    company: &str,
+    title: &str,
+    location: &str,
+    match_score: u32,
+    has_cv: bool,
+    thread_id: Option<u64>,
+    application_id: i64,
+    status: &str,
+) -> CreateEmbed {
+    let score_bar = build_progress_bar(match_score, 100);
+    let score_emoji = if match_score >= 70 {
+        "🟢"
+    } else if match_score >= 40 {
+        "🟡"
+    } else {
+        "🔴"
+    };
+
+    let cv_status = if has_cv {
+        "✅ CV personnalisé"
+    } else {
+        "❌ Aucun CV"
+    };
+
+    let status_display = get_status_display(status);
+
+    let mut embed = CreateEmbed::new()
+        .title("📊 SUIVI DE CANDIDATURE")
+        .colour(COLOR_TRACKING)
+        .field("🏢 Entreprise", company, true)
+        .field("💼 Poste", title, true)
+        .field("📍 Lieu", location, true)
+        .field(
+            "🎯 Score de compatibilité",
+            format!("{} {} **{}%**", score_emoji, score_bar, match_score),
+            false,
+        )
+        .field("📄 CV", cv_status, true)
+        .field("📌 Statut", status_display, true);
+
+    if let Some(tid) = thread_id {
+        embed = embed.field(
+            "📋 Résultats détaillés",
+            format!("👉 <#{}>", tid),
+            false,
+        );
+    }
+
+    embed.footer(serenity::all::CreateEmbedFooter::new(format!("ID: {}", application_id)))
+}
+
+/// Exporte la fonction pour construire les boutons (utilisée par le handler)
+pub fn get_status_buttons(application_id: i64, current_status: &str) -> Vec<CreateActionRow> {
+    build_status_buttons(application_id, current_status)
 }
 
 async fn send_error_response(

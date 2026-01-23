@@ -11,7 +11,10 @@ pub use generation::{
     SynthesizeOfferCommand,
 };
 pub use help::HelpCommand;
-pub use jobs::{ApplyJobCommand, MyStatsCommand, StatusCommand, UpdateStatusCommand};
+pub use jobs::{
+    ApplyJobCommand, MyStatsCommand, StatusCommand, UpdateStatusCommand,
+    get_status_buttons, rebuild_tracking_embed_from_status,
+};
 
 use async_trait::async_trait;
 use serenity::all::{CommandInteraction, Context, CreateCommand};

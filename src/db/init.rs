@@ -104,6 +104,9 @@ fn create_tables(conn: &Connection) -> Result<()> {
             generated_cv_path       TEXT,
             generated_cv_format     TEXT DEFAULT 'pdf',
             
+            -- Discord tracking
+            thread_id               INTEGER,  -- Discord thread ID for detailed results
+
             -- Application tracking
             status                  TEXT DEFAULT 'generated',
             applied_at              DATETIME,

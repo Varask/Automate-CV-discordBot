@@ -51,6 +51,7 @@ pub struct JobApplication {
     pub salary_analysis: Option<String>,
     pub generated_cv_path: Option<String>,
     pub generated_cv_format: String,
+    pub thread_id: Option<i64>,           // Discord thread ID
     pub status: String,
     pub applied_at: Option<String>,
     pub notes: Option<String>,
@@ -127,11 +128,12 @@ fn map_job_application(row: &Row) -> rusqlite::Result<JobApplication> {
         salary_analysis: row.get(16)?,
         generated_cv_path: row.get(17)?,
         generated_cv_format: row.get(18)?,
-        status: row.get(19)?,
-        applied_at: row.get(20)?,
-        notes: row.get(21)?,
-        created_at: row.get(22)?,
-        updated_at: row.get(23)?,
+        thread_id: row.get(19)?,
+        status: row.get(20)?,
+        applied_at: row.get(21)?,
+        notes: row.get(22)?,
+        created_at: row.get(23)?,
+        updated_at: row.get(24)?,
     })
 }
 
@@ -271,6 +273,19 @@ pub fn create_application(
     Ok(conn.last_insert_rowid())
 }
 
+/// Met à jour le thread_id d'une candidature
+pub fn update_application_thread(
+    conn: &Connection,
+    application_id: i64,
+    thread_id: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE job_applications SET thread_id = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+        params![thread_id, application_id],
+    )?;
+    Ok(())
+}
+
 /// Met à jour une candidature avec les résultats de l'analyse AI
 pub fn update_application_analysis(
     conn: &Connection,
@@ -345,8 +360,8 @@ pub fn get_application(conn: &Connection, application_id: i64) -> Result<Option<
         "SELECT id, user_id, base_cv_id, job_title, company, location, job_url,
                 raw_job_description, job_synthesis, required_skills, matching_skills,
                 missing_skills, match_score, salary_min, salary_max, salary_currency,
-                salary_analysis, generated_cv_path, generated_cv_format, status,
-                applied_at, notes, created_at, updated_at
+                salary_analysis, generated_cv_path, generated_cv_format, thread_id,
+                status, applied_at, notes, created_at, updated_at
          FROM job_applications WHERE id = ?1"
     )?;
 
@@ -367,9 +382,9 @@ pub fn list_applications(
                 "SELECT id, user_id, base_cv_id, job_title, company, location, job_url,
                         raw_job_description, job_synthesis, required_skills, matching_skills,
                         missing_skills, match_score, salary_min, salary_max, salary_currency,
-                        salary_analysis, generated_cv_path, generated_cv_format, status,
-                        applied_at, notes, created_at, updated_at
-                 FROM job_applications 
+                        salary_analysis, generated_cv_path, generated_cv_format, thread_id,
+                        status, applied_at, notes, created_at, updated_at
+                 FROM job_applications
                  WHERE user_id = ?1 AND status = ?2
                  ORDER BY created_at DESC
                  LIMIT ?3"
@@ -385,9 +400,9 @@ pub fn list_applications(
                 "SELECT id, user_id, base_cv_id, job_title, company, location, job_url,
                         raw_job_description, job_synthesis, required_skills, matching_skills,
                         missing_skills, match_score, salary_min, salary_max, salary_currency,
-                        salary_analysis, generated_cv_path, generated_cv_format, status,
-                        applied_at, notes, created_at, updated_at
-                 FROM job_applications 
+                        salary_analysis, generated_cv_path, generated_cv_format, thread_id,
+                        status, applied_at, notes, created_at, updated_at
+                 FROM job_applications
                  WHERE user_id = ?1
                  ORDER BY created_at DESC
                  LIMIT ?2"

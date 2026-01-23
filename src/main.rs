@@ -7,6 +7,7 @@ use commands::{
     GenerateCoverLetterCommand, GenerateMarketAnalysisCommand, GenerateResumeCommand,
     GetCvCommand, HelpCommand, ListCvsCommand, ListMyCvsCommand, MyStatsCommand,
     SendCvCommand, StatusCommand, SynthesizeOfferCommand, UpdateStatusCommand,
+    get_status_buttons, rebuild_tracking_embed_from_status,
 };
 use db::Database;
 use services::ClaudeClient;
@@ -74,33 +75,130 @@ impl EventHandler for Handler {
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        if let Interaction::Command(cmd) = interaction {
-            // Récupérer le registre
-            let registry = {
+        match interaction {
+            Interaction::Command(cmd) => {
+                // Récupérer le registre
+                let registry = {
+                    let data = ctx.data.read().await;
+                    data.get::<CommandRegistryKey>()
+                        .expect("CommandRegistry not found")
+                        .clone()
+                };
+
+                // Dispatcher la commande
+                if let Err(e) = registry.dispatch(&ctx, &cmd).await {
+                    error!("Command error: {}", e);
+
+                    // Tenter d'envoyer un message d'erreur à l'utilisateur
+                    let _ = cmd
+                        .create_response(
+                            &ctx.http,
+                            serenity::all::CreateInteractionResponse::Message(
+                                serenity::all::CreateInteractionResponseMessage::new()
+                                    .content(format!("❌ Error: {}", e))
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await;
+                }
+            }
+            Interaction::Component(component) => {
+                // Gérer les clics sur les boutons de statut
+                if let Err(e) = handle_component_interaction(&ctx, &component).await {
+                    error!("Component interaction error: {}", e);
+                    let _ = component
+                        .create_response(
+                            &ctx.http,
+                            serenity::all::CreateInteractionResponse::Message(
+                                serenity::all::CreateInteractionResponseMessage::new()
+                                    .content(format!("❌ Erreur: {}", e))
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Gère les interactions avec les composants (boutons)
+async fn handle_component_interaction(
+    ctx: &Context,
+    component: &serenity::all::ComponentInteraction,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let custom_id = &component.data.custom_id;
+
+    // Format: status_{application_id}_{new_status}
+    if custom_id.starts_with("status_") {
+        let parts: Vec<&str> = custom_id.split('_').collect();
+        if parts.len() >= 3 {
+            let application_id: i64 = parts[1].parse()?;
+            let new_status = parts[2];
+            let user_id = component.user.id.get() as i64;
+
+            info!(
+                "Status update: user {} changing application {} to {}",
+                user_id, application_id, new_status
+            );
+
+            // Récupérer la DB
+            let db = {
                 let data = ctx.data.read().await;
-                data.get::<CommandRegistryKey>()
-                    .expect("CommandRegistry not found")
+                data.get::<Database>()
+                    .ok_or("Database not found")?
                     .clone()
             };
 
-            // Dispatcher la commande
-            if let Err(e) = registry.dispatch(&ctx, &cmd).await {
-                error!("Command error: {}", e);
+            // Mettre à jour le statut en DB
+            let updated = db.update_application_status(application_id, user_id, new_status, None)?;
 
-                // Tenter d'envoyer un message d'erreur à l'utilisateur
-                let _ = cmd
-                    .create_response(
-                        &ctx.http,
-                        serenity::all::CreateInteractionResponse::Message(
-                            serenity::all::CreateInteractionResponseMessage::new()
-                                .content(format!("❌ Error: {}", e))
-                                .ephemeral(true),
-                        ),
-                    )
-                    .await;
+            if !updated {
+                return Err("Cette candidature ne vous appartient pas ou n'existe pas.".into());
             }
+
+            // Récupérer l'application mise à jour pour reconstruire l'embed
+            let app = db
+                .get_application(application_id)?
+                .ok_or("Application not found after update")?;
+
+            // Reconstruire l'embed avec le nouveau statut
+            let thread_id = app.thread_id.map(|t| t as u64);
+            let embed = rebuild_tracking_embed_from_status(
+                app.company.as_deref().unwrap_or("N/A"),
+                app.job_title.as_deref().unwrap_or("N/A"),
+                app.location.as_deref().unwrap_or("N/A"),
+                app.match_score.unwrap_or(0) as u32,
+                app.generated_cv_path.is_some(),
+                thread_id,
+                application_id,
+                new_status,
+            );
+
+            // Reconstruire les boutons
+            let buttons = get_status_buttons(application_id, new_status);
+
+            // Mettre à jour le message avec le nouvel embed et les nouveaux boutons
+            component
+                .create_response(
+                    &ctx.http,
+                    serenity::all::CreateInteractionResponse::UpdateMessage(
+                        serenity::all::CreateInteractionResponseMessage::new()
+                            .embed(embed)
+                            .components(buttons),
+                    ),
+                )
+                .await?;
+
+            info!(
+                "Successfully updated application {} to status {}",
+                application_id, new_status
+            );
         }
     }
+
+    Ok(())
 }
 
 /// Initialise le registre avec toutes les commandes

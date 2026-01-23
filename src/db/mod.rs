@@ -145,6 +145,14 @@ impl Database {
         })
     }
 
+    pub fn update_application_thread(
+        &self,
+        application_id: i64,
+        thread_id: i64,
+    ) -> Result<(), rusqlite::Error> {
+        self.with_conn(|conn| utilities::update_application_thread(conn, application_id, thread_id))
+    }
+
     pub fn update_application_analysis(
         &self,
         application_id: i64,
