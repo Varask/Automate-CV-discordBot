@@ -55,7 +55,15 @@ impl SlashCommand for ApplyJobCommand {
                     "description",
                     "Job description (paste the full text)",
                 )
-                .required(true),
+                .required(false),
+            )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Attachment,
+                    "description_file",
+                    "Job description file (TXT)",
+                )
+                .required(false),
             )
             .add_option(
                 CreateCommandOption::new(
@@ -97,10 +105,41 @@ impl SlashCommand for ApplyJobCommand {
         let user_id = interaction.user.id;
 
         // Get options
-        let job_description = get_string_option(interaction, "description")?;
+        let text_description = get_optional_string_option(interaction, "description");
         let _job_url = get_optional_string_option(interaction, "url");
         let _company = get_optional_string_option(interaction, "company");
         let _title = get_optional_string_option(interaction, "title");
+
+        // Check for file attachment
+        let file_description = get_optional_attachment_content(interaction, "description_file").await;
+
+        // Determine job description: file takes priority, then text
+        let job_description = match (file_description, text_description) {
+            (Ok(Some(content)), _) => {
+                info!("Using job description from file for user {}", user_id);
+                content
+            }
+            (_, Some(text)) => {
+                info!("Using job description from text for user {}", user_id);
+                text
+            }
+            (Err(e), None) => {
+                return send_error_response(
+                    ctx,
+                    interaction,
+                    &format!("Erreur lors de la lecture du fichier: {}", e),
+                )
+                .await;
+            }
+            (Ok(None), None) => {
+                return send_error_response(
+                    ctx,
+                    interaction,
+                    "Veuillez fournir une description de l'offre (texte ou fichier).",
+                )
+                .await;
+            }
+        };
 
         // Récupérer le client Claude
         let claude_client = {
@@ -797,6 +836,58 @@ fn get_optional_int_option(interaction: &CommandInteraction, name: &str) -> Opti
         .iter()
         .find(|opt| opt.name == name)
         .and_then(|opt| opt.value.as_i64())
+}
+
+async fn get_optional_attachment_content(
+    interaction: &CommandInteraction,
+    name: &str,
+) -> Result<Option<String>, String> {
+    // Get attachment ID from options
+    let attachment_id = match interaction
+        .data
+        .options
+        .iter()
+        .find(|opt| opt.name == name)
+        .and_then(|opt| opt.value.as_attachment_id())
+    {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+
+    // Get attachment info from resolved data
+    let attachment = interaction
+        .data
+        .resolved
+        .attachments
+        .get(&attachment_id)
+        .ok_or_else(|| "Fichier non trouvé".to_string())?;
+
+    // Validate file type (only text files for job descriptions)
+    let content_type = attachment.content_type.as_deref().unwrap_or("");
+    let filename = &attachment.filename;
+
+    if !content_type.contains("text/") && !filename.ends_with(".txt") && !filename.ends_with(".md") {
+        return Err(format!(
+            "Type de fichier non supporté: `{}`. Utilisez un fichier texte (.txt, .md).",
+            content_type
+        ));
+    }
+
+    // Download file
+    let file_bytes = attachment
+        .download()
+        .await
+        .map_err(|e| format!("Erreur de téléchargement: {}", e))?;
+
+    // Convert to string
+    let content = String::from_utf8(file_bytes)
+        .map_err(|_| "Le fichier n'est pas un fichier texte valide (UTF-8)".to_string())?;
+
+    if content.trim().is_empty() {
+        return Err("Le fichier est vide".to_string());
+    }
+
+    Ok(Some(content))
 }
 
 async fn send_response(
