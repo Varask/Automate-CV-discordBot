@@ -190,6 +190,34 @@ impl SlashCommand for ApplyJobCommand {
             thread_name
         };
 
+        // 2. Récupérer le CV de l'utilisateur depuis la DB
+        let user_cv = db.get_active_cv(user_id.get() as i64)
+            .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
+
+        // Sauvegarder la candidature en DB
+        let cv_id = user_cv.as_ref().map(|cv| cv.id).unwrap_or(0);
+        let application_id = db
+            .create_application(
+                user_id.get() as i64,
+                cv_id,
+                Some(&synthesis.title),
+                Some(&synthesis.company),
+                Some(&synthesis.location),
+                None, // job_url
+                &job_description,
+            )
+            .map_err(|e| CommandError::Internal(format!("Failed to save application: {}", e)))?;
+
+        info!("Created application {} for user {}", application_id, user_id);
+
+        // Créer le thread pour les résultats détaillés
+        let thread_name = format!("📋 {} - {}", synthesis.company, synthesis.title);
+        let thread_name = if thread_name.len() > 100 {
+            format!("{}...", &thread_name[..97])
+        } else {
+            thread_name
+        };
+
         let thread = channel_id
             .create_thread(
                 &ctx.http,
@@ -227,26 +255,6 @@ impl SlashCommand for ApplyJobCommand {
             .send_message(&ctx.http, CreateMessage::new().embed(synthesis_embed))
             .await
             .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
-
-        // 2. Récupérer le CV de l'utilisateur depuis la DB
-        let user_cv = db.get_active_cv(user_id.get() as i64)
-            .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
-
-        // Sauvegarder la candidature en DB
-        let cv_id = user_cv.as_ref().map(|cv| cv.id).unwrap_or(0);
-        let application_id = db
-            .create_application(
-                user_id.get() as i64,
-                cv_id,
-                Some(&synthesis.title),
-                Some(&synthesis.company),
-                Some(&synthesis.location),
-                None, // job_url
-                &job_description,
-            )
-            .map_err(|e| CommandError::Internal(format!("Failed to save application: {}", e)))?;
-
-        info!("Created application {} for user {}", application_id, user_id);
 
         let cv_content = match &user_cv {
             Some(cv) => {
