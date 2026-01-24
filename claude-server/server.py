@@ -349,11 +349,12 @@ Retourne UNIQUEMENT ce JSON (pas de markdown):
             }
 
     def handle_generate_pdf(self, data: dict) -> dict:
-        """Generate PDF from CV content. Tries LaTeX first, falls back to reportlab."""
+        """Generate PDF from CV content. Tries reportlab first (more reliable), LaTeX as option."""
         cv_content = data.get("cv_content", "")
         name = data.get("name", "Candidat")
         job_title = data.get("job_title", "")
         company = data.get("company", "")
+        prefer_latex = data.get("prefer_latex", False)
 
         if not cv_content:
             return {"success": False, "error": "Missing 'cv_content' field", "pdf_base64": ""}
@@ -361,36 +362,73 @@ Retourne UNIQUEMENT ce JSON (pas de markdown):
         try:
             # Parse CV content into sections
             sections = self._parse_cv_sections(cv_content, name, job_title)
+            print(f"Parsed sections: name={sections['name']}, title={sections['title']}")
+            print(f"  - profil: {len(sections['profil'])} lines")
+            print(f"  - competences: {len(sections['competences'])} lines")
+            print(f"  - experience: {len(sections['experience'])} lines")
+            print(f"  - formation: {len(sections['formation'])} lines")
 
-            # Try LaTeX compilation first (better quality)
-            latex_code = self._generate_latex(sections, job_title, company)
-            pdf_bytes = self._compile_latex(latex_code)
+            pdf_bytes = None
+            method_used = None
+            latex_error = None
+            reportlab_error = None
+
+            if prefer_latex:
+                # Try LaTeX first if explicitly requested
+                try:
+                    latex_code = self._generate_latex(sections, job_title, company)
+                    pdf_bytes = self._compile_latex(latex_code)
+                    if pdf_bytes:
+                        method_used = "latex"
+                except Exception as e:
+                    latex_error = str(e)
+                    print(f"LaTeX failed: {e}")
+
+            # Try reportlab (default, more reliable)
+            if not pdf_bytes:
+                try:
+                    pdf_bytes = self._generate_pdf_reportlab(sections, job_title, company)
+                    if pdf_bytes:
+                        method_used = "reportlab"
+                except Exception as e:
+                    reportlab_error = str(e)
+                    print(f"reportlab failed: {e}")
+                    traceback.print_exc()
+
+            # If reportlab failed and we haven't tried LaTeX yet, try it
+            if not pdf_bytes and not prefer_latex:
+                try:
+                    print("reportlab failed, trying LaTeX fallback...")
+                    latex_code = self._generate_latex(sections, job_title, company)
+                    pdf_bytes = self._compile_latex(latex_code)
+                    if pdf_bytes:
+                        method_used = "latex"
+                except Exception as e:
+                    latex_error = str(e)
+                    print(f"LaTeX fallback also failed: {e}")
 
             if pdf_bytes:
+                print(f"PDF generated successfully with {method_used}: {len(pdf_bytes)} bytes")
                 return {
                     "success": True,
                     "pdf_base64": base64.b64encode(pdf_bytes).decode('utf-8'),
                     "size": len(pdf_bytes),
-                    "method": "latex"
+                    "method": method_used
                 }
 
-            # Fallback to reportlab if LaTeX fails
-            print("LaTeX compilation failed, trying reportlab fallback...")
-            pdf_bytes = self._generate_pdf_reportlab(sections, job_title, company)
+            # Both failed
+            error_details = []
+            if reportlab_error:
+                error_details.append(f"reportlab: {reportlab_error}")
+            if latex_error:
+                error_details.append(f"LaTeX: {latex_error}")
 
-            if pdf_bytes:
-                return {
-                    "success": True,
-                    "pdf_base64": base64.b64encode(pdf_bytes).decode('utf-8'),
-                    "size": len(pdf_bytes),
-                    "method": "reportlab"
-                }
-
-            return {"success": False, "error": "Both LaTeX and reportlab generation failed", "pdf_base64": ""}
+            error_msg = "PDF generation failed. " + "; ".join(error_details) if error_details else "Both methods failed"
+            return {"success": False, "error": error_msg, "pdf_base64": ""}
 
         except Exception as e:
             traceback.print_exc()
-            return {"success": False, "error": str(e), "pdf_base64": ""}
+            return {"success": False, "error": f"PDF generation error: {str(e)}", "pdf_base64": ""}
 
     def _parse_cv_sections(self, cv_content, default_name, default_title):
         """Parse CV content into structured sections."""
@@ -407,28 +445,54 @@ Retourne UNIQUEMENT ce JSON (pas de markdown):
 
         current_section = None
 
+        # Section mapping (case-insensitive)
+        section_map = {
+            'nom': 'name', 'name': 'name',
+            'titre': 'title', 'title': 'title',
+            'profil': 'profil', 'profile': 'profil', 'summary': 'profil', 'résumé': 'profil',
+            'competences': 'competences', 'compétences': 'competences', 'competences cles': 'competences',
+            'compétences clés': 'competences', 'skills': 'competences',
+            'experience': 'experience', 'expérience': 'experience', 'experience professionnelle': 'experience',
+            'expérience professionnelle': 'experience', 'work experience': 'experience',
+            'formation': 'formation', 'education': 'formation', 'études': 'formation',
+            'interets': 'interets', 'intérêts': 'interets', 'interêts': 'interets',
+            'centres d\'intérêt': 'interets', 'hobbies': 'interets', 'interests': 'interets'
+        }
+
         for line in lines:
             line = line.strip()
             if not line:
                 continue
 
-            # Section tags [SECTION] or SECTION headers
+            # Section tags [SECTION]
             if line.startswith('[') and line.endswith(']'):
-                current_section = line[1:-1].lower()
-            elif line.isupper() and len(line) < 40:
-                section_map = {
-                    'NOM': 'name', 'TITRE': 'title', 'PROFIL': 'profil', 'PROFILE': 'profil',
-                    'COMPETENCES': 'competences', 'COMPÉTENCES': 'competences', 'COMPÉTENCES CLÉS': 'competences',
-                    'EXPERIENCE': 'experience', 'EXPÉRIENCE': 'experience', 'EXPÉRIENCE PROFESSIONNELLE': 'experience',
-                    'FORMATION': 'formation', 'EDUCATION': 'formation',
-                    'INTERETS': 'interets', 'INTÉRÊTS': 'interets', 'CENTRES D\'INTÉRÊT': 'interets'
-                }
-                current_section = section_map.get(line.replace(':', ''), current_section)
-            elif current_section:
+                tag = line[1:-1].lower().strip()
+                current_section = section_map.get(tag, tag if tag in sections else None)
+                continue
+
+            # Check for uppercase section headers (with or without colon)
+            clean_line = line.replace(':', '').strip()
+            if clean_line.isupper() or (len(clean_line) < 50 and clean_line.upper() == clean_line):
+                lower_clean = clean_line.lower()
+                if lower_clean in section_map:
+                    current_section = section_map[lower_clean]
+                    continue
+
+            # Also check for "## Section" markdown headers
+            if line.startswith('#'):
+                header = line.lstrip('#').strip().lower()
+                if header in section_map:
+                    current_section = section_map[header]
+                    continue
+
+            # Add content to current section
+            if current_section:
                 if current_section == 'name':
                     sections['name'] = line
+                    current_section = None  # Only take first line for name
                 elif current_section == 'title':
                     sections['title'] = line
+                    current_section = None  # Only take first line for title
                 elif current_section in sections and isinstance(sections[current_section], list):
                     sections[current_section].append(line)
 
@@ -616,33 +680,32 @@ Retourne UNIQUEMENT ce JSON (pas de markdown):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def _generate_pdf_reportlab(self, sections, job_title, company):
-        """Generate PDF using reportlab as fallback."""
+        """Generate PDF using reportlab."""
         if not PDF_GENERATOR:
-            print("reportlab not available")
-            return None
+            raise Exception("reportlab not installed")
 
-        try:
-            from reportlab.lib.pagesizes import A4
-            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.lib.units import cm
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, Table, TableStyle
-            from reportlab.lib.enums import TA_LEFT, TA_CENTER
-            from reportlab.lib.colors import HexColor, black
-            from io import BytesIO
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+        from reportlab.lib.enums import TA_LEFT, TA_CENTER
+        from reportlab.lib.colors import HexColor
+        from io import BytesIO
 
-            buffer = BytesIO()
-            doc = SimpleDocTemplate(
-                buffer,
-                pagesize=A4,
-                rightMargin=1.5*cm,
-                leftMargin=1.5*cm,
-                topMargin=1.5*cm,
-                bottomMargin=1.5*cm
-            )
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            rightMargin=1.5*cm,
+            leftMargin=1.5*cm,
+            topMargin=1.5*cm,
+            bottomMargin=1.5*cm
+        )
 
-            styles = getSampleStyleSheet()
+        styles = getSampleStyleSheet()
 
-            # Custom styles
+        # Custom styles - use unique names to avoid conflicts
+        if 'CVName' not in styles.byName:
             styles.add(ParagraphStyle(
                 name='CVName',
                 parent=styles['Heading1'],
@@ -651,6 +714,7 @@ Retourne UNIQUEMENT ce JSON (pas de markdown):
                 spaceAfter=6,
                 alignment=TA_CENTER
             ))
+        if 'CVTitle' not in styles.byName:
             styles.add(ParagraphStyle(
                 name='CVTitle',
                 parent=styles['Heading2'],
@@ -659,23 +723,23 @@ Retourne UNIQUEMENT ce JSON (pas de markdown):
                 spaceAfter=12,
                 alignment=TA_CENTER
             ))
+        if 'CVSection' not in styles.byName:
             styles.add(ParagraphStyle(
                 name='CVSection',
                 parent=styles['Heading2'],
                 fontSize=12,
                 textColor=HexColor('#2980b9'),
                 spaceBefore=12,
-                spaceAfter=6,
-                borderColor=HexColor('#3498db'),
-                borderWidth=1,
-                borderPadding=3
+                spaceAfter=6
             ))
+        if 'CVItem' not in styles.byName:
             styles.add(ParagraphStyle(
                 name='CVItem',
                 parent=styles['Normal'],
                 fontSize=10,
                 spaceAfter=4
             ))
+        if 'CVBullet' not in styles.byName:
             styles.add(ParagraphStyle(
                 name='CVBullet',
                 parent=styles['Normal'],
@@ -684,81 +748,109 @@ Retourne UNIQUEMENT ce JSON (pas de markdown):
                 spaceAfter=2
             ))
 
-            story = []
+        story = []
 
-            # Header: Name and Title
-            story.append(Paragraph(self._escape(sections['name']), styles['CVName']))
-            story.append(Paragraph(self._escape(sections['title'] or job_title), styles['CVTitle']))
-            story.append(HRFlowable(width="100%", thickness=1, color=HexColor('#3498db')))
-            story.append(Spacer(1, 12))
+        # Header: Name and Title
+        name = sections.get('name', 'Candidat') or 'Candidat'
+        title = sections.get('title') or job_title or 'Candidat'
+        story.append(Paragraph(self._escape(name), styles['CVName']))
+        story.append(Paragraph(self._escape(title), styles['CVTitle']))
+        story.append(HRFlowable(width="100%", thickness=1, color=HexColor('#3498db')))
+        story.append(Spacer(1, 12))
 
-            # Profil
-            if sections['profil']:
-                story.append(Paragraph("PROFIL", styles['CVSection']))
-                profil_text = ' '.join(sections['profil'])
-                story.append(Paragraph(self._escape(profil_text), styles['CVItem']))
+        has_content = False
 
-            # Compétences
-            if sections['competences']:
-                story.append(Paragraph("COMPÉTENCES", styles['CVSection']))
-                for line in sections['competences']:
-                    if '|' in line:
-                        parts = line.split('|', 1)
-                        story.append(Paragraph(
-                            f"<b>{self._escape(parts[0].strip())}</b>: {self._escape(parts[1].strip())}",
-                            styles['CVItem']
-                        ))
-                    else:
-                        story.append(Paragraph(f"• {self._escape(line)}", styles['CVItem']))
+        # Profil
+        profil = sections.get('profil', [])
+        if profil:
+            has_content = True
+            story.append(Paragraph("PROFIL", styles['CVSection']))
+            profil_text = ' '.join(profil)
+            story.append(Paragraph(self._escape(profil_text), styles['CVItem']))
 
-            # Expérience
-            if sections['experience']:
-                story.append(Paragraph("EXPÉRIENCE PROFESSIONNELLE", styles['CVSection']))
-                current_entry = None
-                for line in sections['experience']:
-                    if '|' in line and not line.startswith('-'):
-                        parts = [p.strip() for p in line.split('|')]
-                        dates = parts[0] if len(parts) > 0 else ""
-                        title = parts[1] if len(parts) > 1 else ""
-                        company_name = parts[2] if len(parts) > 2 else ""
-                        location = parts[3] if len(parts) > 3 else ""
-                        story.append(Paragraph(
-                            f"<b>{self._escape(title)}</b> - {self._escape(company_name)} ({self._escape(dates)})",
-                            styles['CVItem']
-                        ))
-                    elif line.startswith('-') or line.startswith('•'):
-                        bullet = line.lstrip('-•* ').strip()
-                        story.append(Paragraph(f"• {self._escape(bullet)}", styles['CVBullet']))
+        # Compétences
+        competences = sections.get('competences', [])
+        if competences:
+            has_content = True
+            story.append(Paragraph("COMPÉTENCES", styles['CVSection']))
+            for line in competences:
+                if '|' in line:
+                    parts = line.split('|', 1)
+                    story.append(Paragraph(
+                        f"<b>{self._escape(parts[0].strip())}</b>: {self._escape(parts[1].strip())}",
+                        styles['CVItem']
+                    ))
+                elif ':' in line:
+                    parts = line.split(':', 1)
+                    story.append(Paragraph(
+                        f"<b>{self._escape(parts[0].strip())}</b>: {self._escape(parts[1].strip())}",
+                        styles['CVItem']
+                    ))
+                else:
+                    story.append(Paragraph(f"• {self._escape(line)}", styles['CVItem']))
 
-            # Formation
-            if sections['formation']:
-                story.append(Paragraph("FORMATION", styles['CVSection']))
-                for line in sections['formation']:
-                    if '|' in line:
-                        parts = [p.strip() for p in line.split('|')]
-                        dates = parts[0] if len(parts) > 0 else ""
-                        diplome = parts[1] if len(parts) > 1 else ""
-                        ecole = parts[2] if len(parts) > 2 else ""
-                        story.append(Paragraph(
-                            f"<b>{self._escape(diplome)}</b> - {self._escape(ecole)} ({self._escape(dates)})",
-                            styles['CVItem']
-                        ))
-                    else:
-                        story.append(Paragraph(self._escape(line), styles['CVItem']))
+        # Expérience
+        experience = sections.get('experience', [])
+        if experience:
+            has_content = True
+            story.append(Paragraph("EXPÉRIENCE PROFESSIONNELLE", styles['CVSection']))
+            for line in experience:
+                if '|' in line and not line.startswith('-'):
+                    parts = [p.strip() for p in line.split('|')]
+                    dates = parts[0] if len(parts) > 0 else ""
+                    exp_title = parts[1] if len(parts) > 1 else ""
+                    company_name = parts[2] if len(parts) > 2 else ""
+                    story.append(Paragraph(
+                        f"<b>{self._escape(exp_title)}</b> - {self._escape(company_name)} ({self._escape(dates)})",
+                        styles['CVItem']
+                    ))
+                elif line.startswith('-') or line.startswith('•'):
+                    bullet = line.lstrip('-•* ').strip()
+                    story.append(Paragraph(f"• {self._escape(bullet)}", styles['CVBullet']))
+                else:
+                    # Ligne normale d'expérience
+                    story.append(Paragraph(self._escape(line), styles['CVItem']))
 
-            # Intérêts
-            if sections['interets']:
-                story.append(Paragraph("CENTRES D'INTÉRÊT", styles['CVSection']))
-                interets_text = ', '.join(sections['interets'])
-                story.append(Paragraph(self._escape(interets_text), styles['CVItem']))
+        # Formation
+        formation = sections.get('formation', [])
+        if formation:
+            has_content = True
+            story.append(Paragraph("FORMATION", styles['CVSection']))
+            for line in formation:
+                if '|' in line:
+                    parts = [p.strip() for p in line.split('|')]
+                    dates = parts[0] if len(parts) > 0 else ""
+                    diplome = parts[1] if len(parts) > 1 else ""
+                    ecole = parts[2] if len(parts) > 2 else ""
+                    story.append(Paragraph(
+                        f"<b>{self._escape(diplome)}</b> - {self._escape(ecole)} ({self._escape(dates)})",
+                        styles['CVItem']
+                    ))
+                else:
+                    story.append(Paragraph(self._escape(line), styles['CVItem']))
 
-            doc.build(story)
-            return buffer.getvalue()
+        # Intérêts
+        interets = sections.get('interets', [])
+        if interets:
+            has_content = True
+            story.append(Paragraph("CENTRES D'INTÉRÊT", styles['CVSection']))
+            interets_text = ', '.join(interets)
+            story.append(Paragraph(self._escape(interets_text), styles['CVItem']))
 
-        except Exception as e:
-            print(f"reportlab PDF generation failed: {e}")
-            traceback.print_exc()
-            return None
+        # If no structured content was found, just put the raw text
+        if not has_content:
+            print("Warning: No structured sections found, using raw content")
+            story.append(Paragraph("CONTENU", styles['CVSection']))
+            # Use a simple fallback
+            story.append(Paragraph("Le CV n'a pas pu être structuré automatiquement.", styles['CVItem']))
+
+        doc.build(story)
+        pdf_data = buffer.getvalue()
+
+        if len(pdf_data) < 1000:
+            raise Exception("Generated PDF is too small, likely empty")
+
+        return pdf_data
 
     def _escape(self, text):
         """Escape HTML special characters (for reportlab fallback)."""
