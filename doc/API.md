@@ -410,6 +410,165 @@ async fn synthesize_job(description: &str) -> Result<JobSynthesis, reqwest::Erro
 
 ---
 
+### POST /extract-pdf
+
+Extrait le texte d'un fichier PDF encod en base64.
+
+**Requête:**
+```bash
+curl -X POST http://localhost:8080/extract-pdf \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pdf_base64": "JVBERi0xLjQKJ..."
+  }'
+```
+
+**Paramètres:**
+
+| Champ | Type | Requis | Description |
+|-------|------|--------|-------------|
+| `pdf_base64` | string | Oui | Contenu du PDF encod en base64 |
+
+**Réponse 200 (succès):**
+```json
+{
+  "success": true,
+  "text": "Jean Dupont\nDéveloppeur Python\n7 ans d'expérience...",
+  "extractor": "pdfplumber"
+}
+```
+
+**Réponse 200 (échec):**
+```json
+{
+  "success": false,
+  "error": "No PDF library available on server",
+  "text": ""
+}
+```
+
+**Champs de réponse:**
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `success` | boolean | Indique si l'extraction a réussi |
+| `text` | string | Texte extrait du PDF |
+| `extractor` | string | Bibliothèque utilisée ("pdfplumber" ou "pypdf2") |
+| `error` | string | Message d'erreur si `success=false` |
+
+**Notes:**
+- Utilise `pdfplumber` en priorité, `PyPDF2` en fallback
+- Le PDF est temporairement écrit sur disque puis supprimé
+- Support des PDFs multi-pages
+
+---
+
+### POST /generate-pdf
+
+Génère un PDF à partir du contenu d'un CV structuré.
+
+**Requête:**
+```bash
+curl -X POST http://localhost:8080/generate-pdf \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cv_content": "[NOM]\nJean Dupont\n\n[TITRE]\nDéveloppeur Senior...",
+    "name": "Jean Dupont",
+    "job_title": "Développeur Senior",
+    "company": "TechCorp",
+    "prefer_latex": false
+  }'
+```
+
+**Paramètres:**
+
+| Champ | Type | Requis | Description |
+|-------|------|--------|-------------|
+| `cv_content` | string | Oui | Contenu structuré du CV (format sections) |
+| `name` | string | Non | Nom du candidat (défaut: "Candidat") |
+| `job_title` | string | Non | Titre du poste visé |
+| `company` | string | Non | Nom de l'entreprise |
+| `prefer_latex` | boolean | Non | Si `true`, essaie LaTeX en premier (défaut: `false`) |
+
+**Format du cv_content:**
+
+Le CV doit être structuré avec des sections entre crochets:
+
+```
+[NOM]
+Jean Dupont
+
+[TITRE]
+Développeur Full Stack Senior
+
+[PROFIL]
+Ingénieur logiciel avec 7 ans d'expérience...
+
+[COMPETENCES]
+Langages|Python, JavaScript, Rust
+Frameworks|Django, React, Serenity
+Bases de données|PostgreSQL, SQLite
+
+[EXPERIENCE]
+2020-2024|Lead Developer|TechCorp|Paris
+- Développement de la plateforme principale
+- Management d'une équipe de 5 développeurs
+- Migration vers microservices
+
+[FORMATION]
+2015-2020|Diplôme d'Ingénieur|École Polytechnique|Informatique
+
+[INTERETS]
+Open source, Machine Learning, Randonnée
+```
+
+**Réponse 200 (succès):**
+```json
+{
+  "success": true,
+  "pdf_base64": "JVBERi0xLjQK...",
+  "size": 45678,
+  "method": "reportlab"
+}
+```
+
+**Réponse 200 (échec):**
+```json
+{
+  "success": false,
+  "error": "PDF generation failed. reportlab: Missing required font; LaTeX: pdflatex not found",
+  "pdf_base64": ""
+}
+```
+
+**Champs de réponse:**
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `success` | boolean | Indique si la génération a réussi |
+| `pdf_base64` | string | PDF généré encodé en base64 |
+| `size` | integer | Taille du PDF en bytes |
+| `method` | string | Méthode utilisée ("reportlab" ou "latex") |
+| `error` | string | Message d'erreur détaillé si `success=false` |
+
+**Méthodes de génération:**
+
+1. **reportlab** (défaut, plus fiable)
+   - Bibliothèque Python native
+   - Ne nécessite pas d'installation système
+   - Style professionnel avec couleurs
+
+2. **LaTeX/ModernCV** (optionnel, meilleure qualité)
+   - Nécessite `texlive-latex-extra` et `texlive-fonts-extra`
+   - Utilise le template ModernCV
+   - Compilation via `pdflatex`
+
+**Ordre de tentative:**
+- Par défaut: reportlab  LaTeX (fallback)
+- Si `prefer_latex=true`: LaTeX  reportlab (fallback)
+
+---
+
 ## Logs
 
 Le serveur log toutes les requêtes dans stdout:

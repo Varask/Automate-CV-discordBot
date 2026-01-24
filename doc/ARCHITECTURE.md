@@ -4,6 +4,8 @@
 
 Ce projet est un bot Discord écrit en Rust qui automatise la personnalisation de CV en fonction des offres d'emploi. Il utilise Claude (via un serveur HTTP intermédiaire) pour l'analyse IA.
 
+> **Note:** Pour les diagrammes détaillés en Mermaid (architecture, séquences, états, classes, ERD, flowchart, mindmap, user journey), voir [DIAGRAMS.md](DIAGRAMS.md).
+
 ## Diagramme d'architecture
 
 ```
@@ -30,6 +32,8 @@ Ce projet est un bot Discord écrit en Rust qui automatise la personnalisation d
 │   - /match-skills        │   │   │ dbLookout│  │ data/cvs/   │  │
 │   - /salary-analysis     │   │   │ bot.db   │  │ fichiers CV │  │
 │   - /generate-cv         │   │   └──────────┘  └─────────────┘  │
+│   - /extract-pdf         │                                       │
+│   - /generate-pdf        │                                       │
 └────────────┬─────────────┘   └──────────────────────────────────┘
              │ subprocess
              ▼

@@ -96,17 +96,42 @@ docker logs discord-cv-bot
 ## Architecture
 
 ```
-┌──────────────┐     ┌─────────────────┐     ┌──────────────┐
-│   Discord    │────▶│  Bot Rust       │────▶│ Claude Server│
-│  (Users)     │     │  (Serenity)     │     │  (Python)    │
-└──────────────┘     └────────┬────────┘     └──────┬───────┘
-                              │                     │
-                              ▼                     ▼
-                     ┌─────────────────┐     ┌──────────────┐
-                     │    SQLite DB    │     │ Claude CLI   │
-                     │  (dbLookout/)   │     │              │
-                     └─────────────────┘     └──────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                           DISCORD (Users)                             │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                │ Slash Commands + Button Interactions
+                                ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                      BOT DISCORD (Rust/Serenity)                      │
+│  ┌────────────┐  ┌─────────────┐  ┌──────────┐  ┌─────────────────┐  │
+│  │ commands/  │  │ services/   │  │   db/    │  │     main.rs     │  │
+│  │  cv.rs     │  │ claude_     │  │  SQLite  │  │  EventHandler   │  │
+│  │  jobs.rs   │  │ client.rs   │  │  wrapper │  │  TypeMap DI     │  │
+│  │  admin.rs  │  │             │  │          │  │                 │  │
+│  └────────────┘  └──────┬──────┘  └────┬─────┘  └─────────────────┘  │
+└─────────────────────────┼──────────────┼─────────────────────────────┘
+                          │ HTTP         │ File I/O
+                          ▼              ▼
+┌─────────────────────────────┐    ┌────────────────────────────────────┐
+│   CLAUDE SERVER (Python)    │    │          DATA STORAGE               │
+│   Port 8080                 │    │  ┌────────────┐  ┌──────────────┐  │
+│   ─────────────────────     │    │  │ dbLookout/ │  │  data/cvs/   │  │
+│   POST /synthesize          │    │  │  bot.db    │  │  fichiers CV │  │
+│   POST /match-skills        │    │  └────────────┘  └──────────────┘  │
+│   POST /salary-analysis     │    └────────────────────────────────────┘
+│   POST /generate-cv         │
+│   POST /extract-pdf         │
+│   POST /generate-pdf        │
+└──────────────┬──────────────┘
+               │ subprocess
+               ▼
+┌─────────────────────────────┐
+│      CLAUDE CODE CLI        │
+│    claude -p "prompt"       │
+└─────────────────────────────┘
 ```
+
+> Voir [doc/DIAGRAMS.md](doc/DIAGRAMS.md) pour les diagrammes SysML détaillés.
 
 > Voir [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) pour les détails techniques.
 
@@ -115,10 +140,11 @@ docker logs discord-cv-bot
 | Document | Description |
 |----------|-------------|
 | [ARCHITECTURE.md](doc/ARCHITECTURE.md) | Architecture technique, composants, flux de données |
+| [DIAGRAMS.md](doc/DIAGRAMS.md) | Diagrammes Mermaid (architecture, séquences, états, classes, ERD, mindmap) |
 | [DEPLOYMENT.md](doc/DEPLOYMENT.md) | Guide de déploiement Docker et local |
 | [TESTING.md](doc/TESTING.md) | Protocole de test complet |
-| [API.md](doc/API.md) | Documentation API du serveur Claude |
-| [COMMANDS.md](doc/COMMANDS.md) | Référence des commandes Discord |
+| [API.md](doc/API.md) | Documentation API du serveur Claude (8 endpoints) |
+| [COMMANDS.md](doc/COMMANDS.md) | Référence des commandes Discord (15 commandes) |
 
 ## Structure du projet
 
@@ -157,15 +183,19 @@ cargo run
 
 ## Roadmap
 
-- [x] Upload et extraction de CV
+- [x] Upload et extraction de CV (PDF/DOC/DOCX/TXT)
 - [x] Synthèse d'offres d'emploi
 - [x] Matching compétences CV/Offre
-- [x] Analyse salariale
-- [x] Génération CV adapté (LaTeX)
-- [ ] Compilation PDF du CV généré
+- [x] Analyse salariale avec conseils de négociation
+- [x] Génération CV adapté (format structuré)
+- [x] Compilation PDF du CV généré (reportlab + LaTeX fallback)
+- [x] Suivi des candidatures avec boutons interactifs
+- [x] Historique des changements de statut
+- [x] Statistiques utilisateur
 - [ ] Génération de lettres de motivation
 - [ ] Rappels automatiques pour les relances
-- [ ] Export des statistiques
+- [ ] Export des statistiques (CSV/JSON)
+- [ ] Support multi-langue (EN/FR)
 
 ## Licence
 
