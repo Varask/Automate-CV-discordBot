@@ -205,88 +205,292 @@ Localisation: {location}'''
         return self.extract_json(response)
 
     def handle_generate_cv(self, data: dict) -> dict:
-        """Generate a tailored CV."""
+        """Generate a tailored CV in LaTeX ModernCV format."""
         cv_content = data.get("cv_content", "")
         job_title = data.get("job_title", "")
         company = data.get("company", "")
         requirements = data.get("requirements", [])
         highlights = data.get("highlights", [])
 
-        prompt = f'''Génère un CV CONCIS adapté au poste. MAXIMUM 1 PAGE. Format structuré.
+        prompt = f'''Analyse ce CV et génère une version adaptée au poste visé.
 
-STRUCTURE EXACTE À SUIVRE:
-
-[NOM]
-Prénom NOM
-
-[TITRE]
-Titre professionnel adapté au poste visé
-
-[PROFIL]
-2-3 phrases percutantes ciblant le poste. Mentionne expérience clé et spécialisation.
-
-[COMPETENCES]
-Langages|C, C++, Python, Rust
-Systèmes|Linux embarqué, RTOS, contraintes mémoire
-Communication|UDP/TCP, CAN, RS422
-Qualité|Tests unitaires, analyse statique, traçabilité
-Outils|Git, GitLab CI, CMake, Make
-Langues|Français (natif), Anglais (C1)
-
-[EXPERIENCE]
-2023-2025|Ingénieur Développement|Entreprise|Ville
-- Accomplissement clé aligné avec le poste visé
-- Réalisation technique pertinente
-- Résultat mesurable si possible
-
-2022|Autre Poste|Entreprise|Ville
-- Point pertinent
-
-[FORMATION]
-2020-2025|Diplôme d'Ingénieur|École|Spécialisation
-
-[INTERETS]
-Domaine1, Domaine2, Hobby pertinent
-
----
 CV SOURCE:
 {cv_content}
 
 POSTE VISÉ: {job_title}
 ENTREPRISE: {company}
-COMPÉTENCES DEMANDÉES: {", ".join(requirements[:6])}
-POINTS FORTS: {", ".join(highlights[:3]) if highlights else "À identifier"}
+COMPÉTENCES DEMANDÉES: {", ".join(requirements[:8]) if requirements else "Non spécifiées"}
+POINTS FORTS IDENTIFIÉS: {", ".join(highlights[:5]) if highlights else "À identifier"}
 
-RÈGLES:
-1. Adapte le TITRE au poste visé
-2. PROFIL: 2-3 phrases ciblées, pas de généralités
-3. COMPETENCES: 5-7 lignes format "Catégorie|valeur1, valeur2"
-4. EXPERIENCE: MAX 3 postes, 3-5 bullets par poste pertinent
-5. FORMATION: MAX 2 entrées
-6. INTERETS: 1 ligne avec éléments pertinents
-7. Reformule les expériences pour matcher les compétences demandées
-8. Supprime tout ce qui n'est pas pertinent pour le poste
+Retourne UNIQUEMENT un JSON valide avec cette structure exacte:
+{{
+    "personal": {{
+        "firstname": "Prénom",
+        "lastname": "NOM",
+        "title": "Titre professionnel adapté au poste -- Domaine",
+        "address": "Ville, Pays",
+        "mobility": "Mobilité nationale/internationale",
+        "phone": "+33 X XX XX XX XX",
+        "email": "email@example.com",
+        "github": "username ou null",
+        "linkedin": "username ou null"
+    }},
+    "profile": "Paragraphe de 3-4 phrases décrivant le profil adapté au poste. Utiliser **gras** pour les mots-clés importants.",
+    "skills": [
+        {{"category": "Langages", "items": "C, C++, Python, Rust"}},
+        {{"category": "Systèmes", "items": "Linux embarqué, RTOS, temps réel"}},
+        {{"category": "Outils", "items": "Git, CMake, Docker, CI/CD"}},
+        {{"category": "Langues", "items": "Français (natif), Anglais (C1)"}}
+    ],
+    "experience": [
+        {{
+            "dates": "2023--2025",
+            "title": "Titre du poste",
+            "company": "Entreprise",
+            "location": "Ville",
+            "description": "Description courte optionnelle",
+            "bullets": [
+                "Accomplissement 1 aligné avec le poste visé",
+                "Accomplissement 2 avec résultats mesurables",
+                "Accomplissement 3 technique pertinent"
+            ]
+        }}
+    ],
+    "education": [
+        {{
+            "dates": "2020--2025",
+            "degree": "Diplôme",
+            "school": "École/Université",
+            "details": "Spécialisation ou détails"
+        }}
+    ],
+    "interests": "Liste des centres d'intérêt pertinents séparés par des virgules",
+    "adaptations": ["Modification 1", "Modification 2"],
+    "summary": "Résumé des adaptations en 1-2 phrases"
+}}
 
-Retourne UNIQUEMENT ce JSON (pas de markdown):
-{{"adaptations":["modification1","modification2"],"summary":"Résumé en 2 phrases","cv_text":"[NOM]\\nPrénom Nom\\n\\n[TITRE]\\n..."}}'''
+RÈGLES IMPORTANTES:
+1. Adapte le TITRE au poste visé (ex: "Ingénieur Développement C/C++ -- Aéronautique")
+2. PROFILE: 3-4 phrases percutantes, utilise **gras** pour les mots-clés
+3. SKILLS: 6-10 catégories maximum, priorise celles demandées dans l'offre
+4. EXPERIENCE: MAX 3 postes les plus pertinents, 3-5 bullets par poste
+5. EDUCATION: MAX 3 entrées
+6. Reformule les expériences pour matcher les compétences demandées
+7. Supprime ce qui n'est pas pertinent pour le poste
+8. Garde les dates au format "AAAA--AAAA" (avec double tiret)'''
 
         response = self.run_claude(prompt, timeout=180)
         result = self.extract_json(response)
 
-        # Fallback: si on a raw_response, essayer de construire une réponse valide
+        # Si parsing échoué, retourner le contenu brut
         if "raw_response" in result:
             return {
                 "latex_content": "",
                 "cv_text": result.get("raw_response", ""),
                 "adaptations": ["CV généré (format brut)"],
-                "summary": "Le CV a été généré mais le parsing JSON a échoué. Contenu disponible en texte brut."
+                "summary": "Le CV a été généré mais le parsing JSON a échoué."
             }
 
-        # Compatibilité: renommer cv_text en latex_content si absent
-        if "cv_text" in result and "latex_content" not in result:
-            result["latex_content"] = result["cv_text"]
+        # Générer le LaTeX ModernCV
+        try:
+            latex_content = self._build_moderncv_latex(result)
+            cv_text = self._build_cv_text(result)
 
-        return result
+            return {
+                "latex_content": latex_content,
+                "cv_text": cv_text,
+                "adaptations": result.get("adaptations", []),
+                "summary": result.get("summary", "CV adapté généré avec succès.")
+            }
+        except Exception as e:
+            print(f"Error building LaTeX: {e}")
+            traceback.print_exc()
+            return {
+                "latex_content": "",
+                "cv_text": str(result),
+                "adaptations": ["Erreur lors de la génération LaTeX"],
+                "summary": f"Erreur: {str(e)}"
+            }
+
+    def _build_moderncv_latex(self, data: dict) -> str:
+        """Build a complete ModernCV LaTeX document from structured data."""
+        personal = data.get("personal", {})
+        profile = data.get("profile", "")
+        skills = data.get("skills", [])
+        experience = data.get("experience", [])
+        education = data.get("education", [])
+        interests = data.get("interests", "")
+
+        # Escape LaTeX special characters
+        def esc(text):
+            if not text:
+                return ""
+            text = str(text)
+            replacements = [
+                ('\\', '\\textbackslash{}'),
+                ('&', '\\&'),
+                ('%', '\\%'),
+                ('$', '\\$'),
+                ('#', '\\#'),
+                ('_', '\\_'),
+                ('{', '\\{'),
+                ('}', '\\}'),
+                ('~', '\\textasciitilde{}'),
+                ('^', '\\textasciicircum{}'),
+            ]
+            for old, new in replacements:
+                text = text.replace(old, new)
+            # Convert **bold** to \textbf{bold}
+            import re
+            text = re.sub(r'\*\*([^*]+)\*\*', r'\\textbf{\1}', text)
+            return text
+
+        # Build header
+        firstname = esc(personal.get("firstname", "Prénom"))
+        lastname = esc(personal.get("lastname", "NOM"))
+        title = esc(personal.get("title", ""))
+        address = esc(personal.get("address", "France"))
+        mobility = esc(personal.get("mobility", ""))
+        phone = esc(personal.get("phone", ""))
+        email = personal.get("email", "")  # Don't escape email
+        github = personal.get("github", "")
+        linkedin = personal.get("linkedin", "")
+
+        # Build skills section
+        skills_latex = ""
+        for skill in skills:
+            cat = esc(skill.get("category", ""))
+            items = esc(skill.get("items", ""))
+            if cat and items:
+                skills_latex += f"\\cvitem{{{cat}}}{{{items}}}\n"
+
+        # Build experience section
+        experience_latex = ""
+        for exp in experience:
+            dates = esc(exp.get("dates", ""))
+            exp_title = esc(exp.get("title", ""))
+            company = esc(exp.get("company", ""))
+            location = esc(exp.get("location", ""))
+            description = esc(exp.get("description", ""))
+            bullets = exp.get("bullets", [])
+
+            bullets_latex = ""
+            if bullets:
+                bullets_latex = "\\begin{itemize}\n"
+                for b in bullets:
+                    bullets_latex += f"\\item {esc(b)}\n"
+                bullets_latex += "\\end{itemize}"
+
+            experience_latex += f"""\\cventry{{{dates}}}{{{exp_title}}}{{{company}}}{{{location}}}{{}}{{
+{description}
+{bullets_latex}}}
+
+"""
+
+        # Build education section
+        education_latex = ""
+        for edu in education:
+            dates = esc(edu.get("dates", ""))
+            degree = esc(edu.get("degree", ""))
+            school = esc(edu.get("school", ""))
+            details = esc(edu.get("details", ""))
+            education_latex += f"\\cventry{{{dates}}}{{{degree}}}{{{school}}}{{}}}{{}}{{{details}}}\n\n"
+
+        # Build social links
+        social_latex = ""
+        if github:
+            social_latex += f"\\social[github]{{{github}}}\n"
+        if linkedin:
+            social_latex += f"\\social[linkedin]{{{linkedin}}}\n"
+
+        # Build complete document
+        latex = f"""\\documentclass[a4paper,11pt]{{moderncv}}
+\\moderncvstyle{{classic}}
+\\moderncvcolor{{blue}}
+
+\\usepackage[scale=0.90]{{geometry}}
+\\usepackage[utf8]{{inputenc}}
+\\usepackage[T1]{{fontenc}}
+\\usepackage{{hyperref}}
+
+\\name{{{firstname}}}{{{lastname}}}
+\\title{{{title}}}
+\\address{{{address}}}{{{mobility}}}{{}}
+\\phone[mobile]{{{phone}}}
+\\email{{{email}}}
+{social_latex}
+
+\\begin{{document}}
+\\makecvtitle
+
+\\section{{Profil}}
+{esc(profile)}
+
+\\section{{Compétences clés}}
+{skills_latex}
+
+\\section{{Expérience professionnelle}}
+{experience_latex}
+
+\\section{{Formation}}
+{education_latex}
+
+\\section{{Centres d'intérêt}}
+{esc(interests)}
+
+\\end{{document}}
+"""
+        return latex
+
+    def _build_cv_text(self, data: dict) -> str:
+        """Build a plain text version of the CV for display."""
+        personal = data.get("personal", {})
+        profile = data.get("profile", "")
+        skills = data.get("skills", [])
+        experience = data.get("experience", [])
+        education = data.get("education", [])
+        interests = data.get("interests", "")
+
+        lines = []
+
+        # Header
+        lines.append(f"[NOM]")
+        lines.append(f"{personal.get('firstname', '')} {personal.get('lastname', '')}")
+        lines.append("")
+        lines.append(f"[TITRE]")
+        lines.append(personal.get("title", ""))
+        lines.append("")
+
+        # Profile
+        lines.append("[PROFIL]")
+        lines.append(profile.replace("**", ""))
+        lines.append("")
+
+        # Skills
+        lines.append("[COMPETENCES]")
+        for skill in skills:
+            lines.append(f"{skill.get('category', '')}|{skill.get('items', '')}")
+        lines.append("")
+
+        # Experience
+        lines.append("[EXPERIENCE]")
+        for exp in experience:
+            lines.append(f"{exp.get('dates', '')}|{exp.get('title', '')}|{exp.get('company', '')}|{exp.get('location', '')}")
+            for b in exp.get("bullets", []):
+                lines.append(f"- {b}")
+            lines.append("")
+
+        # Education
+        lines.append("[FORMATION]")
+        for edu in education:
+            lines.append(f"{edu.get('dates', '')}|{edu.get('degree', '')}|{edu.get('school', '')}|{edu.get('details', '')}")
+        lines.append("")
+
+        # Interests
+        lines.append("[INTERETS]")
+        lines.append(interests)
+
+        return "\n".join(lines)
 
     def handle_extract_pdf(self, data: dict) -> dict:
         """Extract text from a PDF file."""
