@@ -1195,24 +1195,10 @@ RÈGLES IMPORTANTES:
 
         story.append(Spacer(1, 6))
 
-    def _escape_html(self, text):
-        """Escape HTML but preserve <b> tags."""
+    def _escape(self, text):
+        """Escape HTML special characters."""
         if not text:
             return ""
-        # First escape & < >
-        text = text.replace('&', '&amp;')
-        # Temporarily protect <b> and </b>
-        text = text.replace('<b>', '<<<BOLD>>>')
-        text = text.replace('</b>', '<<<ENDBOLD>>>')
-        # Escape remaining < >
-        text = text.replace('<', '&lt;').replace('>', '&gt;')
-        # Restore <b> tags
-        text = text.replace('<<<BOLD>>>', '<b>')
-        text = text.replace('<<<ENDBOLD>>>', '</b>')
-        return text
-
-    def _escape(self, text):
-        """Escape HTML special characters (for reportlab fallback)."""
         return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
     def _escape_with_bold(self, text):
@@ -1220,9 +1206,11 @@ RÈGLES IMPORTANTES:
         if not text:
             return ""
         import re
-        # Convert **bold** to <b>bold</b>
+        # First escape HTML
+        text = self._escape(text)
+        # Then convert **bold** to <b>bold</b> (after escaping, so tags won't be escaped)
         text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', text)
-        return self._escape_html(text)
+        return text
 
     def extract_json(self, response: str) -> dict:
         """Extract JSON from Claude's response."""
