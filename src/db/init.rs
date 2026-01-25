@@ -163,8 +163,28 @@ fn create_tables(conn: &Connection) -> Result<()> {
     )?;
     println!("  📋 Table 'reminders' ready");
 
+    // Exécuter les migrations pour les colonnes manquantes
+    run_migrations(conn)?;
+
     // Créer les index pour les performances
     create_indexes(conn)?;
+
+    Ok(())
+}
+
+/// Exécute les migrations pour ajouter les colonnes manquantes aux tables existantes
+fn run_migrations(conn: &Connection) -> Result<()> {
+    // Migration: Ajouter reminder_date et reminder_sent à job_applications si absents
+    // Ces colonnes ont été ajoutées après la création initiale de la table
+    let _ = conn.execute(
+        "ALTER TABLE job_applications ADD COLUMN reminder_date DATETIME",
+        [],
+    ); // Ignore l'erreur si la colonne existe déjà
+
+    let _ = conn.execute(
+        "ALTER TABLE job_applications ADD COLUMN reminder_sent INTEGER DEFAULT 0",
+        [],
+    ); // Ignore l'erreur si la colonne existe déjà
 
     Ok(())
 }
