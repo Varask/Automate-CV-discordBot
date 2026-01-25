@@ -211,6 +211,91 @@ Localisation: {location}'''
         company = data.get("company", "")
         requirements = data.get("requirements", [])
         highlights = data.get("highlights", [])
+        fit_level = data.get("fit_level", 1)  # 1=standard, 2=modéré, 3=laxiste
+        language = data.get("language", "fr")  # fr, en, es, de, etc.
+
+        # Mapping des langues
+        language_config = {
+            "fr": {
+                "name": "français",
+                "sections": {
+                    "profile": "Profil",
+                    "skills": "Compétences clés",
+                    "experience": "Expérience professionnelle",
+                    "education": "Formation",
+                    "interests": "Centres d'intérêt"
+                }
+            },
+            "en": {
+                "name": "English",
+                "sections": {
+                    "profile": "Profile",
+                    "skills": "Key Skills",
+                    "experience": "Professional Experience",
+                    "education": "Education",
+                    "interests": "Interests"
+                }
+            },
+            "es": {
+                "name": "español",
+                "sections": {
+                    "profile": "Perfil",
+                    "skills": "Competencias clave",
+                    "experience": "Experiencia profesional",
+                    "education": "Formación",
+                    "interests": "Intereses"
+                }
+            },
+            "de": {
+                "name": "Deutsch",
+                "sections": {
+                    "profile": "Profil",
+                    "skills": "Kernkompetenzen",
+                    "experience": "Berufserfahrung",
+                    "education": "Ausbildung",
+                    "interests": "Interessen"
+                }
+            }
+        }
+
+        lang_cfg = language_config.get(language, language_config["fr"])
+
+        # Configuration du niveau d'adaptation (fit)
+        fit_config = {
+            1: {
+                "name": "Standard",
+                "description": "Adaptation légère - garde le CV proche de l'original",
+                "instructions": """NIVEAU STANDARD (conservateur):
+- Reformule légèrement les tâches pour utiliser le vocabulaire de l'offre
+- Garde la structure et le contenu très proches de l'original
+- Ne modifie que les formulations mineures
+- Priorise les expériences pertinentes mais garde toutes les tâches principales"""
+            },
+            2: {
+                "name": "Modéré",
+                "description": "Adaptation modérée - reformule activement pour matcher",
+                "instructions": """NIVEAU MODÉRÉ (équilibré):
+- Reformule activement les tâches pour matcher les compétences demandées
+- Transpose les compétences transférables vers le domaine cible
+- Réorganise les bullets pour mettre en avant les plus pertinentes
+- Peut omettre les tâches peu pertinentes pour gagner de la place
+- Ajoute des métriques et contexte quand c'est honnêtement applicable"""
+            },
+            3: {
+                "name": "Laxiste",
+                "description": "Adaptation maximale - reformulation créative tout en restant honnête",
+                "instructions": """NIVEAU LAXISTE (créatif):
+- Reformulation créative et poussée des tâches
+- Transpose agressivement les compétences vers le nouveau domaine
+- Reformule complètement les bullets pour coller au maximum à l'offre
+- Mets en avant les aspects les plus pertinents même si mineurs dans l'original
+- Utilise le vocabulaire exact de l'offre autant que possible
+- Peut fusionner ou réinterpréter des expériences pour plus de pertinence
+- Reste HONNÊTE: ne jamais inventer d'expériences ou compétences inexistantes"""
+            }
+        }
+
+        fit_cfg = fit_config.get(fit_level, fit_config[1])
 
         prompt = f'''Analyse ce CV et génère une version adaptée au poste visé.
 
@@ -221,6 +306,11 @@ POSTE VISÉ: {job_title}
 ENTREPRISE: {company}
 COMPÉTENCES DEMANDÉES: {", ".join(requirements[:8]) if requirements else "Non spécifiées"}
 POINTS FORTS IDENTIFIÉS: {", ".join(highlights[:5]) if highlights else "À identifier"}
+
+LANGUE DE SORTIE: {lang_cfg["name"]} (tout le contenu du CV doit être dans cette langue)
+NIVEAU D'ADAPTATION: {fit_cfg["name"]} - {fit_cfg["description"]}
+
+{fit_cfg["instructions"]}
 
 Retourne UNIQUEMENT un JSON valide avec cette structure exacte:
 {{
@@ -271,13 +361,41 @@ Retourne UNIQUEMENT un JSON valide avec cette structure exacte:
 
 RÈGLES IMPORTANTES:
 1. Adapte le TITRE au poste visé (ex: "Ingénieur Développement C/C++ -- Aéronautique")
-2. PROFILE: 3-4 phrases percutantes, utilise **gras** pour les mots-clés
+2. PROFILE: 3-4 phrases percutantes, utilise **gras** pour les mots-clés de l'offre
 3. SKILLS: 6-10 catégories maximum, priorise celles demandées dans l'offre
 4. EXPERIENCE: MAX 3 postes les plus pertinents, 3-5 bullets par poste
 5. EDUCATION: MAX 3 entrées
-6. Reformule les expériences pour matcher les compétences demandées
-7. Supprime ce qui n'est pas pertinent pour le poste
-8. Garde les dates au format "AAAA--AAAA" (avec double tiret)'''
+6. Garde les dates au format "AAAA--AAAA" (avec double tiret)
+
+ADAPTATION DES TÂCHES - RÈGLES CRITIQUES:
+Tu dois REFORMULER LATÉRALEMENT les bullets/tâches pour les aligner avec le poste visé:
+
+a) GARDE l'essence de l'expérience mais REFORMULE avec le vocabulaire de l'offre
+   - Si l'offre demande "CI/CD" et le CV dit "automatisation des déploiements" → reformule en "mise en place de pipelines CI/CD"
+   - Si l'offre demande "travail en équipe Agile" et le CV mentionne des sprints → mets en avant "collaboration en méthodologie Agile/Scrum"
+
+b) TRANSPOSE les compétences transférables vers le domaine cible
+   - Développement web → poste embarqué: "optimisation des performances" reste pertinent
+   - Backend → DevOps: "gestion de bases de données" → "administration et monitoring d'infrastructures de données"
+
+c) METS EN AVANT les aspects pertinents, MINIMISE ou OMETS les autres
+   - Si le poste est orienté leadership: développe les aspects coordination, mentorat, revue de code
+   - Si le poste est technique: développe les détails techniques, technologies, résultats mesurables
+
+d) UTILISE LES MOTS-CLÉS EXACTS de l'offre quand c'est honnêtement applicable
+   - Intègre naturellement les termes: {", ".join(requirements[:5]) if requirements else "de l'offre"}
+
+e) QUANTIFIE et CONTEXTUALISE pour le secteur visé
+   - Ajoute des métriques quand possible (%, temps, volume)
+   - Adapte le contexte: "application mobile" → "application critique temps réel" si pertinent
+
+EXEMPLES DE REFORMULATION LATÉRALE:
+- "Développement de scripts Python" → "Automatisation et scripting Python pour l'industrialisation des processus"
+- "Maintenance d'applications" → "Évolution et optimisation d'applications en production"
+- "Travail avec l'équipe QA" → "Collaboration étroite avec les équipes qualité pour assurer la robustesse du code"
+- "Création de documentation" → "Rédaction de spécifications techniques et documentation d'architecture"
+
+NE PAS INVENTER d'expériences, mais reformuler honnêtement celles existantes pour maximiser leur pertinence.'''
 
         response = self.run_claude(prompt, timeout=180)
         result = self.extract_json(response)

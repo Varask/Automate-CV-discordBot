@@ -91,6 +91,28 @@ impl SlashCommand for ApplyJobCommand {
                 )
                 .required(false),
             )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "fit",
+                    "Niveau d'adaptation du CV: 1=standard, 2=modéré, 3=laxiste (défaut: 1)",
+                )
+                .required(false)
+                .min_int_value(1)
+                .max_int_value(3),
+            )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "language",
+                    "Langue de sortie du CV (défaut: fr)",
+                )
+                .required(false)
+                .add_string_choice("Français", "fr")
+                .add_string_choice("English", "en")
+                .add_string_choice("Español", "es")
+                .add_string_choice("Deutsch", "de"),
+            )
     }
 
     async fn execute(
@@ -112,6 +134,8 @@ impl SlashCommand for ApplyJobCommand {
         let _job_url = get_optional_string_option(interaction, "url");
         let _company = get_optional_string_option(interaction, "company");
         let _title = get_optional_string_option(interaction, "title");
+        let fit_level = get_optional_int_option(interaction, "fit").unwrap_or(1) as u8;
+        let language = get_optional_string_option(interaction, "language").unwrap_or_else(|| "fr".to_string());
 
         // Check for file attachment
         let file_description = get_optional_attachment_content(interaction, "description_file").await;
@@ -376,13 +400,28 @@ impl SlashCommand for ApplyJobCommand {
                 .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
             match claude_client
-                .generate_tailored_cv(&cv_content, &synthesis, &skills_match)
+                .generate_tailored_cv(&cv_content, &synthesis, &skills_match, fit_level, &language)
                 .await
             {
                 Ok(generated_cv) => {
+                    let fit_display = match fit_level {
+                        1 => "1️⃣ Standard",
+                        2 => "2️⃣ Modéré",
+                        3 => "3️⃣ Laxiste",
+                        _ => "1️⃣ Standard",
+                    };
+                    let lang_display = match language.as_str() {
+                        "fr" => "🇫🇷 Français",
+                        "en" => "🇬🇧 English",
+                        "es" => "🇪🇸 Español",
+                        "de" => "🇩🇪 Deutsch",
+                        _ => "🇫🇷 Français",
+                    };
                     let mut embed = CreateEmbed::new()
                         .title("📄 CV PERSONNALISÉ GÉNÉRÉ")
                         .colour(COLOR_CV)
+                        .field("🎚️ Adaptation", fit_display, true)
+                        .field("🌐 Langue", lang_display, true)
                         .field("📝 Résumé des adaptations", &generated_cv.summary, false);
 
                     if !generated_cv.adaptations.is_empty() {

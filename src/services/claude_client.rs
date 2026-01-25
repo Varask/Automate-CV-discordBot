@@ -235,15 +235,19 @@ impl ClaudeClient {
     }
 
     /// Generate a tailored CV
+    /// fit_level: 1=standard, 2=modéré, 3=laxiste (plus d'adaptation)
+    /// language: "fr", "en", "es", "de" (langue de sortie du CV)
     pub async fn generate_tailored_cv(
         &self,
         cv_content: &str,
         job_synthesis: &JobSynthesis,
         skills_match: &SkillsMatch,
+        fit_level: u8,
+        language: &str,
     ) -> Result<GeneratedCv, ClaudeError> {
         let url = format!("{}/generate-cv", self.base_url);
 
-        info!("Generating tailored CV");
+        info!("Generating tailored CV (fit={}, lang={})", fit_level, language);
 
         let response = self.client
             .post(&url)
@@ -252,7 +256,9 @@ impl ClaudeClient {
                 "job_title": job_synthesis.title,
                 "company": job_synthesis.company,
                 "requirements": job_synthesis.key_requirements,
-                "highlights": skills_match.highlights
+                "highlights": skills_match.highlights,
+                "fit_level": fit_level,
+                "language": language
             }))
             .send()
             .await?;
