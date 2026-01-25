@@ -394,7 +394,7 @@ RÈGLES IMPORTANTES:
             degree = esc(edu.get("degree", ""))
             school = esc(edu.get("school", ""))
             details = esc(edu.get("details", ""))
-            education_latex += f"\\cventry{{{dates}}}{{{degree}}}{{{school}}}{{}}}{{}}{{{details}}}\n\n"
+            education_latex += f"\\cventry{{{dates}}}{{{degree}}}{{{school}}}{{}}{{}}{{{details}}}\n\n"
 
         # Build social links
         social_latex = ""
