@@ -703,9 +703,16 @@ RÈGLES IMPORTANTES:
         return sections
 
     def _latex_escape(self, text):
-        """Escape special LaTeX characters."""
+        """Escape special LaTeX characters and convert markdown to LaTeX."""
         if not text:
             return ""
+        # First convert **bold** to a placeholder (before escaping)
+        import re
+        bold_matches = re.findall(r'\*\*([^*]+)\*\*', text)
+        for i, match in enumerate(bold_matches):
+            text = text.replace(f'**{match}**', f'<<<BOLD{i}>>>', 1)
+
+        # Escape LaTeX special characters
         replacements = [
             ('\\', '\\textbackslash{}'),
             ('&', '\\&'),
@@ -720,6 +727,14 @@ RÈGLES IMPORTANTES:
         ]
         for old, new in replacements:
             text = text.replace(old, new)
+
+        # Restore bold with LaTeX formatting (escape the content too)
+        for i, match in enumerate(bold_matches):
+            escaped_match = match
+            for old, new in replacements:
+                escaped_match = escaped_match.replace(old, new)
+            text = text.replace(f'<<<BOLD{i}>>>', f'\\textbf{{{escaped_match}}}')
+
         return text
 
     def _generate_latex(self, sections, job_title, company):
@@ -921,7 +936,7 @@ RÈGLES IMPORTANTES:
                 name='CVNameStyle',
                 fontSize=24,
                 textColor=DARK_COLOR,
-                spaceAfter=2,
+                spaceAfter=8,
                 alignment=TA_LEFT,
                 fontName='Helvetica-Bold'
             ),
@@ -1022,10 +1037,7 @@ RÈGLES IMPORTANTES:
             story.append(Paragraph("Profil", cv_styles['Section']))
             story.append(HRFlowable(width="100%", thickness=0.5, color=MAIN_COLOR, spaceAfter=6))
             profil_text = ' '.join(profil)
-            # Convert **bold** to <b>bold</b>
-            import re
-            profil_text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', profil_text)
-            story.append(Paragraph(self._escape_html(profil_text), cv_styles['Body']))
+            story.append(Paragraph(self._escape_with_bold(profil_text), cv_styles['Body']))
 
         # === COMPÉTENCES ===
         competences = sections.get('competences', [])
@@ -1179,7 +1191,7 @@ RÈGLES IMPORTANTES:
 
         # Bullets
         for bullet in bullets:
-            story.append(Paragraph(f"• {self._escape(bullet)}", cv_styles['Bullet']))
+            story.append(Paragraph(f"• {self._escape_with_bold(bullet)}", cv_styles['Bullet']))
 
         story.append(Spacer(1, 6))
 
@@ -1202,6 +1214,15 @@ RÈGLES IMPORTANTES:
     def _escape(self, text):
         """Escape HTML special characters (for reportlab fallback)."""
         return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+    def _escape_with_bold(self, text):
+        """Escape HTML and convert **bold** markdown to <b> tags for reportlab."""
+        if not text:
+            return ""
+        import re
+        # Convert **bold** to <b>bold</b>
+        text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', text)
+        return self._escape_html(text)
 
     def extract_json(self, response: str) -> dict:
         """Extract JSON from Claude's response."""
