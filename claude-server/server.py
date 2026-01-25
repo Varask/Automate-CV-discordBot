@@ -884,169 +884,265 @@ RÈGLES IMPORTANTES:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def _generate_pdf_reportlab(self, sections, job_title, company):
-        """Generate PDF using reportlab."""
+        """Generate professional PDF using reportlab (ModernCV style)."""
         if not PDF_GENERATOR:
             raise Exception("reportlab not installed")
 
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import cm
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
-        from reportlab.lib.enums import TA_LEFT, TA_CENTER
-        from reportlab.lib.colors import HexColor
+        from reportlab.lib.units import cm, mm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+        from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+        from reportlab.lib.colors import HexColor, Color
+        from reportlab.platypus.flowables import Flowable
         from io import BytesIO
+
+        # ModernCV Blue color scheme
+        MAIN_COLOR = HexColor('#2E5090')  # ModernCV blue
+        DARK_COLOR = HexColor('#1A1A1A')
+        GRAY_COLOR = HexColor('#666666')
+        LIGHT_GRAY = HexColor('#999999')
 
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer,
             pagesize=A4,
-            rightMargin=1.5*cm,
-            leftMargin=1.5*cm,
-            topMargin=1.5*cm,
-            bottomMargin=1.5*cm
+            rightMargin=1.2*cm,
+            leftMargin=1.2*cm,
+            topMargin=1.0*cm,
+            bottomMargin=1.0*cm
         )
 
         styles = getSampleStyleSheet()
 
-        # Custom styles - use unique names to avoid conflicts
-        if 'CVName' not in styles.byName:
-            styles.add(ParagraphStyle(
-                name='CVName',
-                parent=styles['Heading1'],
-                fontSize=18,
-                textColor=HexColor('#2c3e50'),
-                spaceAfter=6,
-                alignment=TA_CENTER
-            ))
-        if 'CVTitle' not in styles.byName:
-            styles.add(ParagraphStyle(
-                name='CVTitle',
-                parent=styles['Heading2'],
-                fontSize=12,
-                textColor=HexColor('#3498db'),
-                spaceAfter=12,
-                alignment=TA_CENTER
-            ))
-        if 'CVSection' not in styles.byName:
-            styles.add(ParagraphStyle(
-                name='CVSection',
-                parent=styles['Heading2'],
-                fontSize=12,
-                textColor=HexColor('#2980b9'),
-                spaceBefore=12,
-                spaceAfter=6
-            ))
-        if 'CVItem' not in styles.byName:
-            styles.add(ParagraphStyle(
-                name='CVItem',
-                parent=styles['Normal'],
-                fontSize=10,
-                spaceAfter=4
-            ))
-        if 'CVBullet' not in styles.byName:
-            styles.add(ParagraphStyle(
-                name='CVBullet',
-                parent=styles['Normal'],
+        # Custom styles - ModernCV inspired
+        cv_styles = {
+            'Name': ParagraphStyle(
+                name='CVNameStyle',
+                fontSize=24,
+                textColor=DARK_COLOR,
+                spaceAfter=2,
+                alignment=TA_LEFT,
+                fontName='Helvetica-Bold'
+            ),
+            'Title': ParagraphStyle(
+                name='CVTitleStyle',
+                fontSize=14,
+                textColor=MAIN_COLOR,
+                spaceAfter=8,
+                alignment=TA_LEFT,
+                fontName='Helvetica-Oblique'
+            ),
+            'Contact': ParagraphStyle(
+                name='CVContactStyle',
                 fontSize=9,
-                leftIndent=20,
-                spaceAfter=2
-            ))
+                textColor=GRAY_COLOR,
+                spaceAfter=2,
+                alignment=TA_LEFT
+            ),
+            'Section': ParagraphStyle(
+                name='CVSectionStyle',
+                fontSize=12,
+                textColor=MAIN_COLOR,
+                spaceBefore=14,
+                spaceAfter=6,
+                fontName='Helvetica-Bold'
+            ),
+            'EntryTitle': ParagraphStyle(
+                name='CVEntryTitleStyle',
+                fontSize=10,
+                textColor=DARK_COLOR,
+                spaceAfter=1,
+                fontName='Helvetica-Bold'
+            ),
+            'EntryDetails': ParagraphStyle(
+                name='CVEntryDetailsStyle',
+                fontSize=10,
+                textColor=GRAY_COLOR,
+                spaceAfter=2,
+                fontName='Helvetica-Oblique'
+            ),
+            'EntryDate': ParagraphStyle(
+                name='CVEntryDateStyle',
+                fontSize=9,
+                textColor=MAIN_COLOR,
+                alignment=TA_RIGHT,
+                fontName='Helvetica'
+            ),
+            'Body': ParagraphStyle(
+                name='CVBodyStyle',
+                fontSize=10,
+                textColor=DARK_COLOR,
+                spaceAfter=4,
+                leading=13
+            ),
+            'Bullet': ParagraphStyle(
+                name='CVBulletStyle',
+                fontSize=9,
+                textColor=DARK_COLOR,
+                leftIndent=12,
+                spaceAfter=2,
+                leading=12
+            ),
+            'SkillLabel': ParagraphStyle(
+                name='CVSkillLabelStyle',
+                fontSize=10,
+                textColor=MAIN_COLOR,
+                fontName='Helvetica-Bold'
+            ),
+            'SkillValue': ParagraphStyle(
+                name='CVSkillValueStyle',
+                fontSize=10,
+                textColor=DARK_COLOR
+            ),
+        }
 
         story = []
 
-        # Header: Name and Title
+        # === HEADER ===
         name = sections.get('name', 'Candidat') or 'Candidat'
-        title = sections.get('title') or job_title or 'Candidat'
-        story.append(Paragraph(self._escape(name), styles['CVName']))
-        story.append(Paragraph(self._escape(title), styles['CVTitle']))
-        story.append(HRFlowable(width="100%", thickness=1, color=HexColor('#3498db')))
-        story.append(Spacer(1, 12))
+        title = sections.get('title') or job_title or ''
+
+        # Name
+        story.append(Paragraph(self._escape(name), cv_styles['Name']))
+
+        # Title
+        if title:
+            story.append(Paragraph(self._escape(title), cv_styles['Title']))
+
+        # Horizontal line
+        story.append(HRFlowable(width="100%", thickness=2, color=MAIN_COLOR, spaceAfter=10))
 
         has_content = False
 
-        # Profil
+        # === PROFIL ===
         profil = sections.get('profil', [])
         if profil:
             has_content = True
-            story.append(Paragraph("PROFIL", styles['CVSection']))
+            story.append(Paragraph("Profil", cv_styles['Section']))
+            story.append(HRFlowable(width="100%", thickness=0.5, color=MAIN_COLOR, spaceAfter=6))
             profil_text = ' '.join(profil)
-            story.append(Paragraph(self._escape(profil_text), styles['CVItem']))
+            # Convert **bold** to <b>bold</b>
+            import re
+            profil_text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', profil_text)
+            story.append(Paragraph(self._escape_html(profil_text), cv_styles['Body']))
 
-        # Compétences
+        # === COMPÉTENCES ===
         competences = sections.get('competences', [])
         if competences:
             has_content = True
-            story.append(Paragraph("COMPÉTENCES", styles['CVSection']))
+            story.append(Paragraph("Compétences clés", cv_styles['Section']))
+            story.append(HRFlowable(width="100%", thickness=0.5, color=MAIN_COLOR, spaceAfter=6))
+
+            # Create a table for skills
+            skill_data = []
             for line in competences:
                 if '|' in line:
                     parts = line.split('|', 1)
-                    story.append(Paragraph(
-                        f"<b>{self._escape(parts[0].strip())}</b>: {self._escape(parts[1].strip())}",
-                        styles['CVItem']
-                    ))
+                    label = parts[0].strip()
+                    value = parts[1].strip()
+                    skill_data.append([
+                        Paragraph(f"<b>{self._escape(label)}</b>", cv_styles['SkillLabel']),
+                        Paragraph(self._escape(value), cv_styles['SkillValue'])
+                    ])
                 elif ':' in line:
                     parts = line.split(':', 1)
-                    story.append(Paragraph(
-                        f"<b>{self._escape(parts[0].strip())}</b>: {self._escape(parts[1].strip())}",
-                        styles['CVItem']
-                    ))
-                else:
-                    story.append(Paragraph(f"• {self._escape(line)}", styles['CVItem']))
+                    label = parts[0].strip()
+                    value = parts[1].strip()
+                    skill_data.append([
+                        Paragraph(f"<b>{self._escape(label)}</b>", cv_styles['SkillLabel']),
+                        Paragraph(self._escape(value), cv_styles['SkillValue'])
+                    ])
 
-        # Expérience
+            if skill_data:
+                skill_table = Table(skill_data, colWidths=[4*cm, 13*cm])
+                skill_table.setStyle(TableStyle([
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('TOPPADDING', (0, 0), (-1, -1), 2),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+                ]))
+                story.append(skill_table)
+
+        # === EXPÉRIENCE ===
         experience = sections.get('experience', [])
         if experience:
             has_content = True
-            story.append(Paragraph("EXPÉRIENCE PROFESSIONNELLE", styles['CVSection']))
+            story.append(Paragraph("Expérience professionnelle", cv_styles['Section']))
+            story.append(HRFlowable(width="100%", thickness=0.5, color=MAIN_COLOR, spaceAfter=6))
+
+            current_entry = None
+            current_bullets = []
+
             for line in experience:
                 if '|' in line and not line.startswith('-'):
+                    # Output previous entry
+                    if current_entry:
+                        self._add_experience_entry(story, current_entry, current_bullets, cv_styles)
+                        current_bullets = []
+
                     parts = [p.strip() for p in line.split('|')]
-                    dates = parts[0] if len(parts) > 0 else ""
-                    exp_title = parts[1] if len(parts) > 1 else ""
-                    company_name = parts[2] if len(parts) > 2 else ""
-                    story.append(Paragraph(
-                        f"<b>{self._escape(exp_title)}</b> - {self._escape(company_name)} ({self._escape(dates)})",
-                        styles['CVItem']
-                    ))
+                    current_entry = {
+                        'dates': parts[0] if len(parts) > 0 else "",
+                        'title': parts[1] if len(parts) > 1 else "",
+                        'company': parts[2] if len(parts) > 2 else "",
+                        'location': parts[3] if len(parts) > 3 else "",
+                    }
                 elif line.startswith('-') or line.startswith('•'):
                     bullet = line.lstrip('-•* ').strip()
-                    story.append(Paragraph(f"• {self._escape(bullet)}", styles['CVBullet']))
-                else:
-                    # Ligne normale d'expérience
-                    story.append(Paragraph(self._escape(line), styles['CVItem']))
+                    current_bullets.append(bullet)
 
-        # Formation
+            # Output last entry
+            if current_entry:
+                self._add_experience_entry(story, current_entry, current_bullets, cv_styles)
+
+        # === FORMATION ===
         formation = sections.get('formation', [])
         if formation:
             has_content = True
-            story.append(Paragraph("FORMATION", styles['CVSection']))
+            story.append(Paragraph("Formation", cv_styles['Section']))
+            story.append(HRFlowable(width="100%", thickness=0.5, color=MAIN_COLOR, spaceAfter=6))
+
             for line in formation:
                 if '|' in line:
                     parts = [p.strip() for p in line.split('|')]
                     dates = parts[0] if len(parts) > 0 else ""
                     diplome = parts[1] if len(parts) > 1 else ""
                     ecole = parts[2] if len(parts) > 2 else ""
-                    story.append(Paragraph(
-                        f"<b>{self._escape(diplome)}</b> - {self._escape(ecole)} ({self._escape(dates)})",
-                        styles['CVItem']
-                    ))
-                else:
-                    story.append(Paragraph(self._escape(line), styles['CVItem']))
+                    details = parts[3] if len(parts) > 3 else ""
 
-        # Intérêts
+                    # Create entry table
+                    entry_data = [[
+                        Paragraph(f"<b>{self._escape(diplome)}</b>", cv_styles['EntryTitle']),
+                        Paragraph(self._escape(dates), cv_styles['EntryDate'])
+                    ]]
+                    entry_table = Table(entry_data, colWidths=[13*cm, 4*cm])
+                    entry_table.setStyle(TableStyle([
+                        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                        ('TOPPADDING', (0, 0), (-1, -1), 0),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ]))
+                    story.append(entry_table)
+
+                    if ecole:
+                        story.append(Paragraph(self._escape(ecole), cv_styles['EntryDetails']))
+                    if details:
+                        story.append(Paragraph(self._escape(details), cv_styles['Body']))
+                    story.append(Spacer(1, 4))
+
+        # === CENTRES D'INTÉRÊT ===
         interets = sections.get('interets', [])
         if interets:
             has_content = True
-            story.append(Paragraph("CENTRES D'INTÉRÊT", styles['CVSection']))
+            story.append(Paragraph("Centres d'intérêt", cv_styles['Section']))
+            story.append(HRFlowable(width="100%", thickness=0.5, color=MAIN_COLOR, spaceAfter=6))
             interets_text = ', '.join(interets)
-            story.append(Paragraph(self._escape(interets_text), styles['CVItem']))
+            story.append(Paragraph(self._escape(interets_text), cv_styles['Body']))
 
-        # If no structured content was found, just put the raw text
+        # Fallback if no content
         if not has_content:
-            print("Warning: No structured sections found, using raw content")
-            story.append(Paragraph("CONTENU", styles['CVSection']))
-            # Use a simple fallback
-            story.append(Paragraph("Le CV n'a pas pu être structuré automatiquement.", styles['CVItem']))
+            print("Warning: No structured sections found")
+            story.append(Paragraph("Contenu", cv_styles['Section']))
+            story.append(Paragraph("Le CV n'a pas pu être structuré automatiquement.", cv_styles['Body']))
 
         doc.build(story)
         pdf_data = buffer.getvalue()
@@ -1055,6 +1151,53 @@ RÈGLES IMPORTANTES:
             raise Exception("Generated PDF is too small, likely empty")
 
         return pdf_data
+
+    def _add_experience_entry(self, story, entry, bullets, cv_styles):
+        """Add an experience entry to the story."""
+        from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+        from reportlab.lib.units import cm
+
+        # Title + Date row
+        entry_data = [[
+            Paragraph(f"<b>{self._escape(entry['title'])}</b>", cv_styles['EntryTitle']),
+            Paragraph(self._escape(entry['dates']), cv_styles['EntryDate'])
+        ]]
+        entry_table = Table(entry_data, colWidths=[13*cm, 4*cm])
+        entry_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+        ]))
+        story.append(entry_table)
+
+        # Company + Location
+        company_loc = entry['company']
+        if entry['location']:
+            company_loc += f" — {entry['location']}"
+        if company_loc:
+            story.append(Paragraph(self._escape(company_loc), cv_styles['EntryDetails']))
+
+        # Bullets
+        for bullet in bullets:
+            story.append(Paragraph(f"• {self._escape(bullet)}", cv_styles['Bullet']))
+
+        story.append(Spacer(1, 6))
+
+    def _escape_html(self, text):
+        """Escape HTML but preserve <b> tags."""
+        if not text:
+            return ""
+        # First escape & < >
+        text = text.replace('&', '&amp;')
+        # Temporarily protect <b> and </b>
+        text = text.replace('<b>', '<<<BOLD>>>')
+        text = text.replace('</b>', '<<<ENDBOLD>>>')
+        # Escape remaining < >
+        text = text.replace('<', '&lt;').replace('>', '&gt;')
+        # Restore <b> tags
+        text = text.replace('<<<BOLD>>>', '<b>')
+        text = text.replace('<<<ENDBOLD>>>', '</b>')
+        return text
 
     def _escape(self, text):
         """Escape HTML special characters (for reportlab fallback)."""

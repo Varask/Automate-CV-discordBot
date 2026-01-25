@@ -277,6 +277,14 @@ impl SlashCommand for GenerateCoverLetterCommand {
                 )
                 .required(true),
             )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "application_id",
+                    "Optional: Link to an existing application to save the cover letter",
+                )
+                .required(false),
+            )
     }
 
     async fn execute(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<(), CommandError> {
@@ -284,6 +292,14 @@ impl SlashCommand for GenerateCoverLetterCommand {
 
         let job_description = get_string_option(interaction, "job_description")?;
         let user_id = interaction.user.id;
+
+        // Get optional application_id
+        let application_id = interaction
+            .data
+            .options
+            .iter()
+            .find(|opt| opt.name == "application_id")
+            .and_then(|opt| opt.value.as_i64());
 
         // Récupérer Claude et DB
         let (claude_client, db) = {
@@ -296,6 +312,23 @@ impl SlashCommand for GenerateCoverLetterCommand {
                 .clone();
             (claude, db)
         };
+
+        // If application_id provided, verify it belongs to user
+        if let Some(app_id) = application_id {
+            let app = db.get_application(app_id)
+                .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
+            match app {
+                Some(a) if a.user_id != user_id.get() as i64 => {
+                    return followup_response(ctx, interaction,
+                        "Cette candidature ne vous appartient pas.").await;
+                }
+                None => {
+                    return followup_response(ctx, interaction,
+                        "Candidature non trouvee.").await;
+                }
+                _ => {}
+            }
+        }
 
         // Récupérer le CV
         let user_cv = db.get_active_cv(user_id.get() as i64)
@@ -321,7 +354,8 @@ impl SlashCommand for GenerateCoverLetterCommand {
         // Prompt pour générer la lettre de motivation
         let prompt = format!(
             "Génère une lettre de motivation professionnelle en français pour cette offre d'emploi. \
-            Retourne UNIQUEMENT le texte de la lettre, sans JSON.\n\n\
+            La lettre doit être personnalisée, professionnelle et montrer l'adéquation entre le profil et le poste. \
+            Retourne UNIQUEMENT le texte de la lettre, sans JSON ni markdown.\n\n\
             Offre:\n{}\n\n\
             CV du candidat:\n{}",
             job_description,
@@ -330,23 +364,46 @@ impl SlashCommand for GenerateCoverLetterCommand {
 
         match claude_client.prompt(&prompt).await {
             Ok(letter) => {
-                // Discord limite les messages à 2000 caractères
-                let truncated = if letter.len() > 1900 {
-                    format!("{}...\n\n_[Tronqué - lettre complète disponible sur demande]_", &letter[..1900])
+                // Save to database if application_id provided
+                let saved = if let Some(app_id) = application_id {
+                    match db.save_cover_letter(app_id, &letter) {
+                        Ok(_) => {
+                            info!("Saved cover letter to application {}", app_id);
+                            true
+                        }
+                        Err(e) => {
+                            error!("Failed to save cover letter: {}", e);
+                            false
+                        }
+                    }
                 } else {
-                    letter
+                    false
                 };
 
-                let embed = CreateEmbed::new()
-                    .title("✉️ LETTRE DE MOTIVATION")
+                // Discord limite les messages à 2000 caractères
+                let truncated = if letter.len() > 1800 {
+                    format!("{}...\n\n_[Lettre tronquee - {} caracteres au total]_",
+                        &letter[..1800], letter.len())
+                } else {
+                    letter.clone()
+                };
+
+                let mut embed = CreateEmbed::new()
+                    .title("LETTRE DE MOTIVATION")
                     .colour(Colour::from_rgb(155, 89, 182))
                     .description(truncated);
+
+                if saved {
+                    embed = embed.footer(serenity::all::CreateEmbedFooter::new(
+                        format!("Sauvegardee dans la candidature #{}", application_id.unwrap())
+                    ));
+                }
 
                 followup_embed(ctx, interaction, embed).await
             }
             Err(e) => {
                 error!("Failed to generate cover letter: {}", e);
-                followup_response(ctx, interaction, &format!("❌ Erreur: {}", e)).await
+                followup_response(ctx, interaction, &format!("Erreur: {}", e)).await
             }
         }
     }

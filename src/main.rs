@@ -8,15 +8,19 @@ use commands::{
     GetCvCommand, HelpCommand, ListCvsCommand, ListMyCvsCommand, MyStatsCommand,
     SendCvCommand, StatusCommand, SynthesizeOfferCommand, UpdateStatusCommand,
     get_status_buttons, rebuild_tracking_embed_from_status,
+    // Reminder commands
+    SetReminderCommand, ListRemindersCommand, ClearReminderCommand,
+    CreateReminderCommand, DeleteReminderCommand,
 };
 use db::Database;
 use services::ClaudeClient;
-use serenity::all::{GatewayIntents, GuildId, Interaction};
+use serenity::all::{ChannelId, GatewayIntents, GuildId, Interaction, UserId};
 use serenity::async_trait;
 use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{error, info, warn};
 
 /// Clé pour stocker le registre de commandes dans le TypeMap de Serenity
@@ -201,6 +205,94 @@ async fn handle_component_interaction(
     Ok(())
 }
 
+/// Tache de fond pour verifier et envoyer les rappels automatiques
+async fn reminder_check_task(http: Arc<serenity::http::Http>, db: Database) {
+    info!("Starting reminder check background task");
+
+    loop {
+        // Check every 5 minutes
+        tokio::time::sleep(Duration::from_secs(300)).await;
+
+        // Check application reminders
+        match db.get_pending_application_reminders() {
+            Ok(apps) => {
+                for app in apps {
+                    info!("Sending reminder for application {} to user {}", app.id, app.user_id);
+
+                    // Try to DM the user
+                    let user_id = UserId::new(app.user_id as u64);
+                    match user_id.create_dm_channel(&http).await {
+                        Ok(dm_channel) => {
+                            let message = format!(
+                                "**Rappel de suivi de candidature**\n\n\
+                                Candidature **#{}** - {} chez {}\n\
+                                Statut actuel: `{}`\n\n\
+                                N'oubliez pas de faire le suivi de cette candidature!\n\
+                                Utilisez `/status` pour voir vos candidatures.",
+                                app.id,
+                                app.job_title.as_deref().unwrap_or("N/A"),
+                                app.company.as_deref().unwrap_or("N/A"),
+                                app.status
+                            );
+
+                            if let Err(e) = dm_channel.say(&http, &message).await {
+                                error!("Failed to send reminder DM: {}", e);
+                            } else {
+                                // Mark as sent
+                                if let Err(e) = db.mark_application_reminder_sent(app.id) {
+                                    error!("Failed to mark reminder as sent: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to create DM channel for user {}: {}", app.user_id, e);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to get pending application reminders: {}", e);
+            }
+        }
+
+        // Check standalone reminders
+        match db.get_pending_reminders() {
+            Ok(reminders) => {
+                for reminder in reminders {
+                    info!("Sending standalone reminder {} to user {}", reminder.id, reminder.user_id);
+
+                    // Send to the specified channel
+                    let channel_id = ChannelId::new(reminder.channel_id as u64);
+                    let user_mention = format!("<@{}>", reminder.user_id);
+
+                    let message = format!(
+                        "{} **Rappel**\n\n{}",
+                        user_mention,
+                        reminder.message
+                    );
+
+                    if let Err(e) = channel_id.say(&http, &message).await {
+                        error!("Failed to send reminder to channel: {}", e);
+                        // Try DM as fallback
+                        let user_id = UserId::new(reminder.user_id as u64);
+                        if let Ok(dm_channel) = user_id.create_dm_channel(&http).await {
+                            let _ = dm_channel.say(&http, &format!("**Rappel**\n\n{}", reminder.message)).await;
+                        }
+                    }
+
+                    // Mark as sent
+                    if let Err(e) = db.mark_reminder_sent(reminder.id) {
+                        error!("Failed to mark standalone reminder as sent: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to get pending reminders: {}", e);
+            }
+        }
+    }
+}
+
 /// Initialise le registre avec toutes les commandes
 fn build_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
@@ -232,6 +324,14 @@ fn build_registry() -> CommandRegistry {
         .register(GenerateResumeCommand::new())
         .register(GenerateCoverLetterCommand::new())
         .register(GenerateMarketAnalysisCommand::new());
+
+    // === REMINDER COMMANDS ===
+    registry
+        .register(SetReminderCommand::new())
+        .register(ListRemindersCommand::new())
+        .register(ClearReminderCommand::new())
+        .register(CreateReminderCommand::new())
+        .register(DeleteReminderCommand::new());
 
     // Help command (created last to include all commands)
     let help_info = registry.help_info();
@@ -272,6 +372,9 @@ async fn main() {
         .await
         .expect("Failed to create client");
 
+    // Clone for background task
+    let db_for_task = database.clone();
+
     // Injecter les services dans le TypeMap
     {
         let mut data = client.data.write().await;
@@ -281,6 +384,16 @@ async fn main() {
     }
 
     info!("🚀 Starting bot...");
+
+    // Get HTTP client for background task
+    let http = client.http.clone();
+
+    // Spawn reminder check background task
+    tokio::spawn(async move {
+        // Wait a bit for the bot to fully connect
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        reminder_check_task(http, db_for_task).await;
+    });
 
     if let Err(e) = client.start().await {
         error!("Client error: {:?}", e);

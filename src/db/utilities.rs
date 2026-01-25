@@ -51,12 +51,28 @@ pub struct JobApplication {
     pub salary_analysis: Option<String>,
     pub generated_cv_path: Option<String>,
     pub generated_cv_format: String,
+    pub cover_letter: Option<String>,
+    pub cover_letter_generated_at: Option<String>,
     pub thread_id: Option<i64>,           // Discord thread ID
     pub status: String,
     pub applied_at: Option<String>,
     pub notes: Option<String>,
+    pub reminder_date: Option<String>,
+    pub reminder_sent: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reminder {
+    pub id: i64,
+    pub user_id: i64,
+    pub application_id: Option<i64>,
+    pub channel_id: i64,
+    pub reminder_date: String,
+    pub message: String,
+    pub is_sent: bool,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,12 +144,29 @@ fn map_job_application(row: &Row) -> rusqlite::Result<JobApplication> {
         salary_analysis: row.get(16)?,
         generated_cv_path: row.get(17)?,
         generated_cv_format: row.get(18)?,
-        thread_id: row.get(19)?,
-        status: row.get(20)?,
-        applied_at: row.get(21)?,
-        notes: row.get(22)?,
-        created_at: row.get(23)?,
-        updated_at: row.get(24)?,
+        cover_letter: row.get(19)?,
+        cover_letter_generated_at: row.get(20)?,
+        thread_id: row.get(21)?,
+        status: row.get(22)?,
+        applied_at: row.get(23)?,
+        notes: row.get(24)?,
+        reminder_date: row.get(25)?,
+        reminder_sent: row.get::<_, i32>(26)? == 1,
+        created_at: row.get(27)?,
+        updated_at: row.get(28)?,
+    })
+}
+
+fn map_reminder(row: &Row) -> rusqlite::Result<Reminder> {
+    Ok(Reminder {
+        id: row.get(0)?,
+        user_id: row.get(1)?,
+        application_id: row.get(2)?,
+        channel_id: row.get(3)?,
+        reminder_date: row.get(4)?,
+        message: row.get(5)?,
+        is_sent: row.get::<_, i32>(6)? == 1,
+        created_at: row.get(7)?,
     })
 }
 
@@ -360,14 +393,25 @@ pub fn get_application(conn: &Connection, application_id: i64) -> Result<Option<
         "SELECT id, user_id, base_cv_id, job_title, company, location, job_url,
                 raw_job_description, job_synthesis, required_skills, matching_skills,
                 missing_skills, match_score, salary_min, salary_max, salary_currency,
-                salary_analysis, generated_cv_path, generated_cv_format, thread_id,
-                status, applied_at, notes, created_at, updated_at
+                salary_analysis, generated_cv_path, generated_cv_format,
+                cover_letter, cover_letter_generated_at, thread_id,
+                status, applied_at, notes, reminder_date, reminder_sent,
+                created_at, updated_at
          FROM job_applications WHERE id = ?1"
     )?;
 
     let app = stmt.query_row(params![application_id], map_job_application).optional()?;
     Ok(app)
 }
+
+const JOB_APPLICATION_SELECT: &str = "SELECT id, user_id, base_cv_id, job_title, company, location, job_url,
+        raw_job_description, job_synthesis, required_skills, matching_skills,
+        missing_skills, match_score, salary_min, salary_max, salary_currency,
+        salary_analysis, generated_cv_path, generated_cv_format,
+        cover_letter, cover_letter_generated_at, thread_id,
+        status, applied_at, notes, reminder_date, reminder_sent,
+        created_at, updated_at
+ FROM job_applications";
 
 /// Liste les candidatures d'un utilisateur avec filtres
 pub fn list_applications(
@@ -378,17 +422,11 @@ pub fn list_applications(
 ) -> Result<Vec<JobApplication>> {
     match status_filter {
         Some(status) => {
-            let mut stmt = conn.prepare(
-                "SELECT id, user_id, base_cv_id, job_title, company, location, job_url,
-                        raw_job_description, job_synthesis, required_skills, matching_skills,
-                        missing_skills, match_score, salary_min, salary_max, salary_currency,
-                        salary_analysis, generated_cv_path, generated_cv_format, thread_id,
-                        status, applied_at, notes, created_at, updated_at
-                 FROM job_applications
-                 WHERE user_id = ?1 AND status = ?2
-                 ORDER BY created_at DESC
-                 LIMIT ?3"
-            )?;
+            let sql = format!(
+                "{} WHERE user_id = ?1 AND status = ?2 ORDER BY created_at DESC LIMIT ?3",
+                JOB_APPLICATION_SELECT
+            );
+            let mut stmt = conn.prepare(&sql)?;
             let apps: Vec<JobApplication> = stmt
                 .query_map(params![user_id, status, limit], map_job_application)?
                 .filter_map(|r| r.ok())
@@ -396,17 +434,11 @@ pub fn list_applications(
             Ok(apps)
         }
         None => {
-            let mut stmt = conn.prepare(
-                "SELECT id, user_id, base_cv_id, job_title, company, location, job_url,
-                        raw_job_description, job_synthesis, required_skills, matching_skills,
-                        missing_skills, match_score, salary_min, salary_max, salary_currency,
-                        salary_analysis, generated_cv_path, generated_cv_format, thread_id,
-                        status, applied_at, notes, created_at, updated_at
-                 FROM job_applications
-                 WHERE user_id = ?1
-                 ORDER BY created_at DESC
-                 LIMIT ?2"
-            )?;
+            let sql = format!(
+                "{} WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+                JOB_APPLICATION_SELECT
+            );
+            let mut stmt = conn.prepare(&sql)?;
             let apps: Vec<JobApplication> = stmt
                 .query_map(params![user_id, limit], map_job_application)?
                 .filter_map(|r| r.ok())
@@ -553,4 +585,216 @@ pub fn list_all_cvs(conn: &Connection) -> Result<Vec<(i64, String, BaseCv)>> {
 pub fn clear_all_cvs(conn: &Connection) -> Result<usize> {
     let count = conn.execute("DELETE FROM base_cvs", [])?;
     Ok(count)
+}
+
+// ============================================================================
+// COVER LETTER OPERATIONS
+// ============================================================================
+
+/// Sauvegarde une lettre de motivation pour une candidature
+pub fn save_cover_letter(
+    conn: &Connection,
+    application_id: i64,
+    cover_letter: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE job_applications SET
+            cover_letter = ?1,
+            cover_letter_generated_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?2",
+        params![cover_letter, application_id],
+    )?;
+    Ok(())
+}
+
+/// Récupère la lettre de motivation d'une candidature
+pub fn get_cover_letter(conn: &Connection, application_id: i64) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT cover_letter FROM job_applications WHERE id = ?1"
+    )?;
+    let letter: Option<String> = stmt
+        .query_row(params![application_id], |row| row.get(0))
+        .optional()?
+        .flatten();
+    Ok(letter)
+}
+
+/// Liste les candidatures avec lettre de motivation pour un utilisateur
+pub fn list_applications_with_cover_letters(
+    conn: &Connection,
+    user_id: i64,
+    limit: i64,
+) -> Result<Vec<JobApplication>> {
+    let sql = format!(
+        "{} WHERE user_id = ?1 AND cover_letter IS NOT NULL ORDER BY cover_letter_generated_at DESC LIMIT ?2",
+        JOB_APPLICATION_SELECT
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let apps: Vec<JobApplication> = stmt
+        .query_map(params![user_id, limit], map_job_application)?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(apps)
+}
+
+// ============================================================================
+// REMINDER OPERATIONS
+// ============================================================================
+
+/// Crée un rappel pour une candidature
+pub fn set_application_reminder(
+    conn: &Connection,
+    application_id: i64,
+    reminder_date: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE job_applications SET
+            reminder_date = ?1,
+            reminder_sent = 0,
+            updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?2",
+        params![reminder_date, application_id],
+    )?;
+    Ok(())
+}
+
+/// Supprime un rappel de candidature
+pub fn clear_application_reminder(conn: &Connection, application_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE job_applications SET
+            reminder_date = NULL,
+            reminder_sent = 0,
+            updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?1",
+        params![application_id],
+    )?;
+    Ok(())
+}
+
+/// Marque un rappel de candidature comme envoyé
+pub fn mark_application_reminder_sent(conn: &Connection, application_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE job_applications SET
+            reminder_sent = 1,
+            updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?1",
+        params![application_id],
+    )?;
+    Ok(())
+}
+
+/// Liste les rappels de candidatures en attente (date passée et non envoyés)
+pub fn get_pending_application_reminders(conn: &Connection) -> Result<Vec<JobApplication>> {
+    let sql = format!(
+        "{} WHERE reminder_date IS NOT NULL
+         AND reminder_sent = 0
+         AND datetime(reminder_date) <= datetime('now')
+         ORDER BY reminder_date ASC",
+        JOB_APPLICATION_SELECT
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let apps: Vec<JobApplication> = stmt
+        .query_map([], map_job_application)?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(apps)
+}
+
+/// Liste les rappels à venir pour un utilisateur
+pub fn list_user_application_reminders(
+    conn: &Connection,
+    user_id: i64,
+) -> Result<Vec<JobApplication>> {
+    let sql = format!(
+        "{} WHERE user_id = ?1
+         AND reminder_date IS NOT NULL
+         AND reminder_sent = 0
+         ORDER BY reminder_date ASC",
+        JOB_APPLICATION_SELECT
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let apps: Vec<JobApplication> = stmt
+        .query_map(params![user_id], map_job_application)?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(apps)
+}
+
+// ============================================================================
+// STANDALONE REMINDER OPERATIONS
+// ============================================================================
+
+/// Crée un rappel standalone (non lié à une candidature)
+pub fn create_reminder(
+    conn: &Connection,
+    user_id: i64,
+    application_id: Option<i64>,
+    channel_id: i64,
+    reminder_date: &str,
+    message: &str,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO reminders (user_id, application_id, channel_id, reminder_date, message)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![user_id, application_id, channel_id, reminder_date, message],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Récupère un rappel par son ID
+pub fn get_reminder(conn: &Connection, reminder_id: i64) -> Result<Option<Reminder>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, user_id, application_id, channel_id, reminder_date, message, is_sent, created_at
+         FROM reminders WHERE id = ?1"
+    )?;
+    let reminder = stmt.query_row(params![reminder_id], map_reminder).optional()?;
+    Ok(reminder)
+}
+
+/// Liste les rappels d'un utilisateur
+pub fn list_user_reminders(conn: &Connection, user_id: i64) -> Result<Vec<Reminder>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, user_id, application_id, channel_id, reminder_date, message, is_sent, created_at
+         FROM reminders WHERE user_id = ?1 AND is_sent = 0
+         ORDER BY reminder_date ASC"
+    )?;
+    let reminders: Vec<Reminder> = stmt
+        .query_map(params![user_id], map_reminder)?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(reminders)
+}
+
+/// Supprime un rappel
+pub fn delete_reminder(conn: &Connection, reminder_id: i64, user_id: i64) -> Result<bool> {
+    let rows = conn.execute(
+        "DELETE FROM reminders WHERE id = ?1 AND user_id = ?2",
+        params![reminder_id, user_id],
+    )?;
+    Ok(rows > 0)
+}
+
+/// Marque un rappel comme envoyé
+pub fn mark_reminder_sent(conn: &Connection, reminder_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE reminders SET is_sent = 1 WHERE id = ?1",
+        params![reminder_id],
+    )?;
+    Ok(())
+}
+
+/// Liste tous les rappels en attente (date passée et non envoyés)
+pub fn get_pending_reminders(conn: &Connection) -> Result<Vec<Reminder>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, user_id, application_id, channel_id, reminder_date, message, is_sent, created_at
+         FROM reminders
+         WHERE is_sent = 0 AND datetime(reminder_date) <= datetime('now')
+         ORDER BY reminder_date ASC"
+    )?;
+    let reminders: Vec<Reminder> = stmt
+        .query_map([], map_reminder)?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(reminders)
 }

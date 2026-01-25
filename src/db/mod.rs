@@ -217,6 +217,95 @@ impl Database {
     pub fn clear_all_cvs(&self) -> Result<usize, rusqlite::Error> {
         self.with_conn(|conn| utilities::clear_all_cvs(conn))
     }
+
+    // ========================================================================
+    // COVER LETTER METHODS
+    // ========================================================================
+
+    pub fn save_cover_letter(
+        &self,
+        application_id: i64,
+        cover_letter: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.with_conn(|conn| utilities::save_cover_letter(conn, application_id, cover_letter))
+    }
+
+    pub fn get_cover_letter(&self, application_id: i64) -> Result<Option<String>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::get_cover_letter(conn, application_id))
+    }
+
+    pub fn list_applications_with_cover_letters(
+        &self,
+        user_id: i64,
+        limit: i64,
+    ) -> Result<Vec<JobApplication>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::list_applications_with_cover_letters(conn, user_id, limit))
+    }
+
+    // ========================================================================
+    // APPLICATION REMINDER METHODS
+    // ========================================================================
+
+    pub fn set_application_reminder(
+        &self,
+        application_id: i64,
+        reminder_date: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.with_conn(|conn| utilities::set_application_reminder(conn, application_id, reminder_date))
+    }
+
+    pub fn clear_application_reminder(&self, application_id: i64) -> Result<(), rusqlite::Error> {
+        self.with_conn(|conn| utilities::clear_application_reminder(conn, application_id))
+    }
+
+    pub fn mark_application_reminder_sent(&self, application_id: i64) -> Result<(), rusqlite::Error> {
+        self.with_conn(|conn| utilities::mark_application_reminder_sent(conn, application_id))
+    }
+
+    pub fn get_pending_application_reminders(&self) -> Result<Vec<JobApplication>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::get_pending_application_reminders(conn))
+    }
+
+    pub fn list_user_application_reminders(&self, user_id: i64) -> Result<Vec<JobApplication>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::list_user_application_reminders(conn, user_id))
+    }
+
+    // ========================================================================
+    // STANDALONE REMINDER METHODS
+    // ========================================================================
+
+    pub fn create_reminder(
+        &self,
+        user_id: i64,
+        application_id: Option<i64>,
+        channel_id: i64,
+        reminder_date: &str,
+        message: &str,
+    ) -> Result<i64, rusqlite::Error> {
+        self.with_conn(|conn| {
+            utilities::create_reminder(conn, user_id, application_id, channel_id, reminder_date, message)
+        })
+    }
+
+    pub fn get_reminder(&self, reminder_id: i64) -> Result<Option<Reminder>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::get_reminder(conn, reminder_id))
+    }
+
+    pub fn list_user_reminders(&self, user_id: i64) -> Result<Vec<Reminder>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::list_user_reminders(conn, user_id))
+    }
+
+    pub fn delete_reminder(&self, reminder_id: i64, user_id: i64) -> Result<bool, rusqlite::Error> {
+        self.with_conn(|conn| utilities::delete_reminder(conn, reminder_id, user_id))
+    }
+
+    pub fn mark_reminder_sent(&self, reminder_id: i64) -> Result<(), rusqlite::Error> {
+        self.with_conn(|conn| utilities::mark_reminder_sent(conn, reminder_id))
+    }
+
+    pub fn get_pending_reminders(&self) -> Result<Vec<Reminder>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::get_pending_reminders(conn))
+    }
 }
 
 impl Clone for Database {

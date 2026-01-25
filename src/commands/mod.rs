@@ -3,6 +3,7 @@ mod cv;
 mod generation;
 mod help;
 mod jobs;
+mod reminders;
 
 pub use admin::{ClearAllCvsCommand, GetCvCommand, ListCvsCommand};
 pub use cv::{DeleteCvCommand, ListMyCvsCommand, SendCvCommand};
@@ -14,6 +15,10 @@ pub use help::HelpCommand;
 pub use jobs::{
     ApplyJobCommand, MyStatsCommand, StatusCommand, UpdateStatusCommand,
     get_status_buttons, rebuild_tracking_embed_from_status,
+};
+pub use reminders::{
+    SetReminderCommand, ListRemindersCommand, ClearReminderCommand,
+    CreateReminderCommand, DeleteReminderCommand,
 };
 
 use async_trait::async_trait;
@@ -44,6 +49,12 @@ pub enum CommandError {
     MissingParameter(String),
     /// Permission refusée
     PermissionDenied,
+    /// Ressource non trouvée
+    NotFound(String),
+    /// Non autorisé
+    Unauthorized(String),
+    /// Input invalide
+    InvalidInput(String),
     /// Erreur interne
     Internal(String),
 }
@@ -54,6 +65,9 @@ impl std::fmt::Display for CommandError {
             CommandError::ResponseFailed(msg) => write!(f, "Failed to send response: {}", msg),
             CommandError::MissingParameter(param) => write!(f, "Missing parameter: {}", param),
             CommandError::PermissionDenied => write!(f, "Permission denied"),
+            CommandError::NotFound(msg) => write!(f, "Not found: {}", msg),
+            CommandError::Unauthorized(msg) => write!(f, "Unauthorized: {}", msg),
+            CommandError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             CommandError::Internal(msg) => write!(f, "Internal error: {}", msg),
         }
     }

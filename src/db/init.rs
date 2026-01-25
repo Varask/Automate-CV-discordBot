@@ -103,7 +103,11 @@ fn create_tables(conn: &Connection) -> Result<()> {
             -- Generated CV
             generated_cv_path       TEXT,
             generated_cv_format     TEXT DEFAULT 'pdf',
-            
+
+            -- Cover letter
+            cover_letter            TEXT,
+            cover_letter_generated_at DATETIME,
+
             -- Discord tracking
             thread_id               INTEGER,  -- Discord thread ID for detailed results
 
@@ -111,6 +115,10 @@ fn create_tables(conn: &Connection) -> Result<()> {
             status                  TEXT DEFAULT 'generated',
             applied_at              DATETIME,
             notes                   TEXT,
+
+            -- Reminder
+            reminder_date           DATETIME,
+            reminder_sent           INTEGER DEFAULT 0,
             
             created_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -137,6 +145,24 @@ fn create_tables(conn: &Connection) -> Result<()> {
     )?;
     println!("  📋 Table 'application_status_history' ready");
 
+    // Table: reminders (standalone reminders not linked to applications)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS reminders (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id         INTEGER NOT NULL,
+            application_id  INTEGER,  -- Optional link to application
+            channel_id      INTEGER NOT NULL,  -- Discord channel for notification
+            reminder_date   DATETIME NOT NULL,
+            message         TEXT NOT NULL,
+            is_sent         INTEGER DEFAULT 0,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (application_id) REFERENCES job_applications(id) ON DELETE SET NULL
+        )",
+        [],
+    )?;
+    println!("  📋 Table 'reminders' ready");
+
     // Créer les index pour les performances
     create_indexes(conn)?;
 
@@ -157,7 +183,10 @@ fn create_indexes(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_job_applications_user ON job_applications(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_job_applications_status ON job_applications(status)",
         "CREATE INDEX IF NOT EXISTS idx_job_applications_user_status ON job_applications(user_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_job_applications_reminder ON job_applications(reminder_date, reminder_sent)",
         "CREATE INDEX IF NOT EXISTS idx_status_history_app ON application_status_history(application_id)",
+        "CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_reminders_pending ON reminders(reminder_date, is_sent)",
     ];
 
     for idx in indexes {

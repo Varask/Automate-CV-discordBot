@@ -23,9 +23,12 @@ En faisant ma recherche d'emploi, j'ai remarqué que j'ai les compétences pour 
 | `/applyjob` | Analyser une offre et générer un dossier complet |
 | `/status` | Voir vos candidatures |
 | `/mystats` | Consulter vos statistiques |
+| `/generatecoverletter` | Generer une lettre de motivation |
+| `/setreminder` | Programmer un rappel de suivi |
+| `/listreminders` | Voir tous vos rappels |
 | `/help` | Afficher toutes les commandes |
 
-> Voir [doc/COMMANDS.md](doc/COMMANDS.md) pour la documentation complète des 15 commandes.
+> Voir [doc/COMMANDS.md](doc/COMMANDS.md) pour la documentation complète des 20 commandes.
 
 ## Technologies
 
@@ -151,14 +154,19 @@ docker logs discord-cv-bot
 ```
 Automate-CV-discordBot/
 ├── src/
-│   ├── main.rs           # Point d'entrée
-│   ├── commands/         # Commandes Discord (15 commandes)
-│   ├── db/               # Couche base de données SQLite
+│   ├── main.rs           # Point d'entree + tache de fond rappels
+│   ├── commands/         # Commandes Discord (20 commandes)
+│   │   ├── cv.rs         # Gestion CV
+│   │   ├── jobs.rs       # Candidatures
+│   │   ├── generation.rs # Generation IA (CV, lettre motivation)
+│   │   ├── reminders.rs  # Gestion des rappels
+│   │   └── ...
+│   ├── db/               # Couche base de donnees SQLite
 │   └── services/         # Client HTTP pour Claude
 ├── claude-server/        # Wrapper HTTP Python pour Claude CLI
 ├── doc/                  # Documentation technique
-├── dbLookout/            # Base de données (généré)
-├── data/cvs/             # CVs uploadés (généré)
+├── dbLookout/            # Base de donnees (genere)
+├── data/cvs/             # CVs uploades (genere)
 ├── Dockerfile            # Image du bot Rust
 ├── docker-compose.yml    # Orchestration
 └── .env.example          # Template de configuration
@@ -192,8 +200,8 @@ cargo run
 - [x] Suivi des candidatures avec boutons interactifs
 - [x] Historique des changements de statut
 - [x] Statistiques utilisateur
-- [ ] Génération de lettres de motivation
-- [ ] Rappels automatiques pour les relances
+- [x] Génération de lettres de motivation (avec sauvegarde en DB)
+- [x] Rappels automatiques pour les relances
 - [ ] Export des statistiques (CSV/JSON)
 - [ ] Support multi-langue (EN/FR)
 
