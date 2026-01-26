@@ -206,14 +206,6 @@ impl SlashCommand for ApplyJobCommand {
             }
         };
 
-        // Créer le thread pour les résultats détaillés
-        let thread_name = format!("📋 {} - {}", synthesis.company, synthesis.title);
-        let thread_name = if thread_name.len() > 100 {
-            format!("{}...", &thread_name[..97])
-        } else {
-            thread_name
-        };
-
         // 2. Récupérer le CV de l'utilisateur depuis la DB
         let user_cv = db.get_active_cv(user_id.get() as i64)
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;

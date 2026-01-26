@@ -4,7 +4,7 @@
 pub mod init;
 pub mod utilities;
 
-pub use init::{init_database, get_db_path};
+pub use init::init_database;
 pub use utilities::*;
 
 use rusqlite::Connection;

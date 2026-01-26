@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serenity::all::{
     Colour, CommandInteraction, CommandOptionType, Context, CreateCommand, CreateCommandOption,
-    CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
+    CreateEmbed,
 };
 use tracing::{error, info};
 
@@ -209,8 +209,8 @@ impl SlashCommand for GenerateResumeCommand {
             }
         };
 
-        // 3. Générer le CV
-        match claude_client.generate_tailored_cv(&cv_content, &synthesis, &skills_match).await {
+        // 3. Générer le CV (fit_level=2 modéré, langue=fr)
+        match claude_client.generate_tailored_cv(&cv_content, &synthesis, &skills_match, 2, "fr").await {
             Ok(generated) => {
                 let mut embed = CreateEmbed::new()
                     .title("📝 CV PERSONNALISÉ GÉNÉRÉ")

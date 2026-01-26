@@ -3,7 +3,7 @@ use serenity::all::{
     Colour, CommandInteraction, CommandOptionType, Context, CreateCommand, CreateCommandOption,
     CreateEmbed, EditInteractionResponse,
 };
-use tracing::{error, info};
+use tracing::info;
 use chrono::{NaiveDateTime, Utc, Duration};
 
 use super::{CommandError, SlashCommand};
