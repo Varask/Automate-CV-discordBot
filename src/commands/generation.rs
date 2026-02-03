@@ -201,7 +201,7 @@ impl SlashCommand for GenerateResumeCommand {
         };
 
         // 2. Matcher les skills
-        let skills_match = match claude_client.match_skills(&job_description, &cv_content).await {
+        let skills_match = match claude_client.match_skills(&job_description, &cv_content, None).await {
             Ok(s) => s,
             Err(e) => {
                 error!("Failed to match skills: {}", e);
@@ -210,7 +210,7 @@ impl SlashCommand for GenerateResumeCommand {
         };
 
         // 3. Générer le CV (fit_level=2 modéré, langue=fr)
-        match claude_client.generate_tailored_cv(&cv_content, &synthesis, &skills_match, 2, "fr").await {
+        match claude_client.generate_tailored_cv(&cv_content, &synthesis, &skills_match, 2, "fr", None).await {
             Ok(generated) => {
                 let mut embed = CreateEmbed::new()
                     .title("📝 CV PERSONNALISÉ GÉNÉRÉ")

@@ -387,6 +387,19 @@ pub fn update_application_generated_cv(
     Ok(())
 }
 
+/// Met à jour les notes d'une candidature
+pub fn update_application_notes(
+    conn: &Connection,
+    application_id: i64,
+    notes: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE job_applications SET notes = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+        params![notes, application_id],
+    )?;
+    Ok(())
+}
+
 /// Récupère une candidature par son ID
 pub fn get_application(conn: &Connection, application_id: i64) -> Result<Option<JobApplication>> {
     let mut stmt = conn.prepare(

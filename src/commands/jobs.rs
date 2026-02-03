@@ -113,6 +113,14 @@ impl SlashCommand for ApplyJobCommand {
                 .add_string_choice("Español", "es")
                 .add_string_choice("Deutsch", "de"),
             )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "notes",
+                    "Notes complémentaires sur votre expérience (domaines, projets, contexte...)",
+                )
+                .required(false),
+            )
     }
 
     async fn execute(
@@ -136,6 +144,7 @@ impl SlashCommand for ApplyJobCommand {
         let _title = get_optional_string_option(interaction, "title");
         let fit_level = get_optional_int_option(interaction, "fit").unwrap_or(1) as u8;
         let language = get_optional_string_option(interaction, "language").unwrap_or_else(|| "fr".to_string());
+        let notes = get_optional_string_option(interaction, "notes");
 
         // Check for file attachment
         let file_description = get_optional_attachment_content(interaction, "description_file").await;
@@ -224,6 +233,13 @@ impl SlashCommand for ApplyJobCommand {
             )
             .map_err(|e| CommandError::Internal(format!("Failed to save application: {}", e)))?;
 
+        // Sauvegarder les notes si fournies
+        if let Some(ref notes_text) = notes {
+            if let Err(e) = db.update_application_notes(application_id, notes_text) {
+                warn!("Failed to save application notes: {}", e);
+            }
+        }
+
         info!("Created application {} for user {}", application_id, user_id);
 
         // Créer le thread pour les résultats détaillés
@@ -305,7 +321,7 @@ impl SlashCommand for ApplyJobCommand {
 
         // Analyse des compétences
         let skills_match = match claude_client
-            .match_skills(&job_description, &cv_content)
+            .match_skills(&job_description, &cv_content, notes.as_deref())
             .await
         {
             Ok(s) => s,
@@ -392,7 +408,7 @@ impl SlashCommand for ApplyJobCommand {
                 .map_err(|e| CommandError::ResponseFailed(e.to_string()))?;
 
             match claude_client
-                .generate_tailored_cv(&cv_content, &synthesis, &skills_match, fit_level, &language)
+                .generate_tailored_cv(&cv_content, &synthesis, &skills_match, fit_level, &language, notes.as_deref())
                 .await
             {
                 Ok(generated_cv) => {

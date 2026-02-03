@@ -117,17 +117,24 @@ impl ClaudeClient {
         &self,
         job_description: &str,
         cv_content: &str,
+        experience_notes: Option<&str>,
     ) -> Result<SkillsMatch, ClaudeError> {
         let url = format!("{}/match-skills", self.base_url);
 
         info!("Matching skills");
 
+        let mut payload = json!({
+            "job_description": job_description,
+            "cv_content": cv_content
+        });
+
+        if let Some(notes) = experience_notes {
+            payload["experience_notes"] = json!(notes);
+        }
+
         let response = self.client
             .post(&url)
-            .json(&json!({
-                "job_description": job_description,
-                "cv_content": cv_content
-            }))
+            .json(&payload)
             .send()
             .await?;
 
@@ -244,22 +251,29 @@ impl ClaudeClient {
         skills_match: &SkillsMatch,
         fit_level: u8,
         language: &str,
+        experience_notes: Option<&str>,
     ) -> Result<GeneratedCv, ClaudeError> {
         let url = format!("{}/generate-cv", self.base_url);
 
         info!("Generating tailored CV (fit={}, lang={})", fit_level, language);
 
+        let mut payload = json!({
+            "cv_content": cv_content,
+            "job_title": job_synthesis.title,
+            "company": job_synthesis.company,
+            "requirements": job_synthesis.key_requirements,
+            "highlights": skills_match.highlights,
+            "fit_level": fit_level,
+            "language": language
+        });
+
+        if let Some(notes) = experience_notes {
+            payload["experience_notes"] = json!(notes);
+        }
+
         let response = self.client
             .post(&url)
-            .json(&json!({
-                "cv_content": cv_content,
-                "job_title": job_synthesis.title,
-                "company": job_synthesis.company,
-                "requirements": job_synthesis.key_requirements,
-                "highlights": skills_match.highlights,
-                "fit_level": fit_level,
-                "language": language
-            }))
+            .json(&payload)
             .send()
             .await?;
 
