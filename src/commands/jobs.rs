@@ -9,7 +9,7 @@ use tracing::{error, info, warn};
 
 use super::{CommandError, SlashCommand};
 use crate::db::Database;
-use crate::services::{JobSynthesis, SalaryAnalysis, SkillsMatch};
+use crate::services::{ClaudeClient, JobSynthesis, SalaryAnalysis, SkillsMatch};
 use crate::ClaudeClientKey;
 
 // Couleurs des embeds
@@ -447,17 +447,40 @@ impl SlashCommand for ApplyJobCommand {
                     let username = &interaction.user.name;
 
                     match claude_client
-                        .generate_pdf(cv_text, username, &synthesis.title, &synthesis.company)
+                        .generate_pdf(cv_text, username, &synthesis.title, &synthesis.company, false)
                         .await
                     {
                         Ok(pdf_bytes) => {
+                            let page_count = ClaudeClient::count_pdf_pages(&pdf_bytes);
+                            let final_pdf = if page_count > 1 {
+                                info!("CV PDF has {} pages, retrying with single_page=true", page_count);
+                                match claude_client
+                                    .generate_pdf(cv_text, username, &synthesis.title, &synthesis.company, true)
+                                    .await
+                                {
+                                    Ok(retry_bytes) => {
+                                        let retry_pages = ClaudeClient::count_pdf_pages(&retry_bytes);
+                                        if retry_pages > 1 {
+                                            warn!("CV PDF still has {} pages after single_page retry", retry_pages);
+                                        }
+                                        retry_bytes
+                                    }
+                                    Err(e) => {
+                                        warn!("Single-page PDF retry failed: {}, using original", e);
+                                        pdf_bytes
+                                    }
+                                }
+                            } else {
+                                pdf_bytes
+                            };
+
                             let safe_title = synthesis.title
                                 .chars()
                                 .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
                                 .collect::<String>()
                                 .replace(' ', "_");
                             let filename = format!("CV_{}_{}.pdf", username, safe_title);
-                            let attachment = CreateAttachment::bytes(pdf_bytes, &filename);
+                            let attachment = CreateAttachment::bytes(final_pdf, &filename);
 
                             embed = embed.field(
                                 "📥 Téléchargement",

@@ -304,26 +304,54 @@ impl ClaudeClient {
         Ok(cv)
     }
 
+    /// Count the number of pages in a PDF from raw bytes.
+    /// Uses a heuristic: counts `/Type /Page` occurrences that are not `/Type /Pages`.
+    pub fn count_pdf_pages(pdf_bytes: &[u8]) -> usize {
+        let content = String::from_utf8_lossy(pdf_bytes);
+        let mut count = 0;
+        let mut search_from = 0;
+
+        while let Some(pos) = content[search_from..].find("/Type") {
+            let abs_pos = search_from + pos;
+            let rest = &content[abs_pos + 5..];
+            let trimmed = rest.trim_start();
+            if trimmed.starts_with("/Page") && !trimmed.starts_with("/Pages") {
+                count += 1;
+            }
+            search_from = abs_pos + 5;
+        }
+
+        count.max(1)
+    }
+
     /// Generate a PDF from CV content
+    /// If `single_page` is true, the server is instructed to fit everything on one page.
     pub async fn generate_pdf(
         &self,
         cv_content: &str,
         name: &str,
         job_title: &str,
         company: &str,
+        single_page: bool,
     ) -> Result<Vec<u8>, ClaudeError> {
         let url = format!("{}/generate-pdf", self.base_url);
 
-        info!("Generating PDF");
+        info!("Generating PDF (single_page={})", single_page);
+
+        let mut payload = json!({
+            "cv_content": cv_content,
+            "name": name,
+            "job_title": job_title,
+            "company": company
+        });
+
+        if single_page {
+            payload["single_page"] = json!(true);
+        }
 
         let response = self.client
             .post(&url)
-            .json(&json!({
-                "cv_content": cv_content,
-                "name": name,
-                "job_title": job_title,
-                "company": company
-            }))
+            .json(&payload)
             .send()
             .await?;
 
