@@ -521,25 +521,24 @@ NE PAS INVENTER d'expériences, mais reformuler honnêtement celles existantes p
         if linkedin:
             social_latex += f"\\social[linkedin]{{{linkedin}}}\n"
 
+        # Format phone with non-breaking spaces (LaTeX convention)
+        phone_formatted = phone.replace(" ", "~") if phone else ""
+        phone_line = f"\\phone[mobile]{{{phone_formatted}}}\n" if phone_formatted else ""
+        email_line = f"\\email{{{email}}}\n" if email else ""
+
         # Build complete document
         latex = f"""\\documentclass[a4paper,11pt]{{moderncv}}
-\\moderncvstyle{{classic}}
+\\moderncvstyle[symbols]{{classic}}
 \\moderncvcolor{{blue}}
-
-\\usepackage[scale=0.90]{{geometry}}
-\\usepackage[utf8]{{inputenc}}
-\\usepackage[T1]{{fontenc}}
-\\usepackage{{hyperref}}
+\\usepackage[scale=0.95]{{geometry}}
 
 \\name{{{firstname}}}{{{lastname}}}
 \\title{{{title}}}
 \\address{{{address}}}{{{mobility}}}{{}}
-\\phone[mobile]{{{phone}}}
-\\email{{{email}}}
-{social_latex}
-
+{phone_line}{email_line}{social_latex}
 \\begin{{document}}
 \\makecvtitle
+\\vspace{{-1.5cm}}
 
 \\section{{Profil}}
 {esc(profile)}
@@ -928,19 +927,16 @@ NE PAS INVENTER d'expériences, mais reformuler honnêtement celles existantes p
 
         # Generate full LaTeX document
         latex = f'''\\documentclass[a4paper,11pt]{{moderncv}}
-\\moderncvstyle{{classic}}
+\\moderncvstyle[symbols]{{classic}}
 \\moderncvcolor{{blue}}
-
-\\usepackage[utf8]{{inputenc}}
-\\usepackage[T1]{{fontenc}}
-\\usepackage[scale=0.88]{{geometry}}
-\\usepackage{{hyperref}}
+\\usepackage[scale=0.95]{{geometry}}
 
 \\name{{{firstname}}}{{{lastname}}}
 \\title{{{title}}}
 
 \\begin{{document}}
 \\makecvtitle
+\\vspace{{-1.5cm}}
 
 \\section{{Profil}}
 {profil_text}
