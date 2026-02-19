@@ -400,6 +400,18 @@ NE PAS INVENTER d'expériences, mais reformuler honnêtement celles existantes p
         response = self.run_claude(prompt, timeout=180)
         result = self.extract_json(response)
 
+        # Extraire les infos de contact directement du CV source (fiable)
+        # et les injecter dans le JSON pour qu'elles ne soient jamais perdues
+        contact = self._extract_contact_info(cv_content)
+        if contact:
+            personal = result.get("personal", {})
+            if not isinstance(personal, dict):
+                personal = {}
+            for field in ("phone", "email", "github", "linkedin"):
+                if field in contact:
+                    personal[field] = contact[field]
+            result["personal"] = personal
+
         # Si parsing échoué, retourner le contenu brut
         if "raw_response" in result:
             return {
@@ -429,6 +441,43 @@ NE PAS INVENTER d'expériences, mais reformuler honnêtement celles existantes p
                 "adaptations": ["Erreur lors de la génération LaTeX"],
                 "summary": f"Erreur: {str(e)}"
             }
+
+    def _extract_contact_info(self, cv_content: str) -> dict:
+        """Extract contact info from CV source text using regex.
+        Returns only the fields actually found, so missing ones won't override Claude's output."""
+        import re
+        info = {}
+
+        # Phone: +33 7 82 38 16 99 / +33782381699 / 07 82 38 16 99 / etc.
+        phone_match = re.search(
+            r'(\+\d{1,3}[\s\.\-]?\d[\d\s\.\-]{6,17}\d|\b0\d[\s\.\-]?\d{2}[\s\.\-]?\d{2}[\s\.\-]?\d{2}[\s\.\-]?\d{2}\b)',
+            cv_content
+        )
+        if phone_match:
+            info['phone'] = phone_match.group(1).strip()
+
+        # Email
+        email_match = re.search(r'[\w\.\-\+]+@[\w\.\-]+\.[a-zA-Z]{2,}', cv_content)
+        if email_match:
+            info['email'] = email_match.group(0)
+
+        # GitHub: github.com/username or "github: username" or "github username"
+        github_match = re.search(
+            r'github\.com/([a-zA-Z0-9_\-]+)|github[:\s]+([a-zA-Z0-9_\-]{2,})',
+            cv_content, re.IGNORECASE
+        )
+        if github_match:
+            info['github'] = (github_match.group(1) or github_match.group(2)).strip()
+
+        # LinkedIn: linkedin.com/in/username or "linkedin: username"
+        linkedin_match = re.search(
+            r'linkedin\.com/in/([a-zA-Z0-9_\-]+)|linkedin[:\s]+([a-zA-Z0-9_\-]{2,})',
+            cv_content, re.IGNORECASE
+        )
+        if linkedin_match:
+            info['linkedin'] = (linkedin_match.group(1) or linkedin_match.group(2)).strip()
+
+        return info
 
     def _build_moderncv_latex(self, data: dict) -> str:
         """Build a complete ModernCV LaTeX document from structured data."""
