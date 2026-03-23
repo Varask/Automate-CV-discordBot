@@ -105,6 +105,7 @@ impl Database {
     // APPLICATION METHODS
     // ========================================================================
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_application(
         &self,
         user_id: i64,
@@ -179,6 +180,7 @@ impl Database {
         }).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_application_salary(
         &self,
         application_id: i64,
@@ -221,11 +223,11 @@ impl Database {
     // ========================================================================
 
     pub async fn list_all_cvs(&self) -> Result<Vec<(i64, String, BaseCv)>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::list_all_cvs(conn)).await
+        self.with_conn(utilities::list_all_cvs).await
     }
 
     pub async fn clear_all_cvs(&self) -> Result<usize, rusqlite::Error> {
-        self.with_conn(|conn| utilities::clear_all_cvs(conn)).await
+        self.with_conn(utilities::clear_all_cvs).await
     }
 
     // ========================================================================
@@ -273,7 +275,7 @@ impl Database {
     }
 
     pub async fn get_pending_application_reminders(&self) -> Result<Vec<JobApplication>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::get_pending_application_reminders(conn)).await
+        self.with_conn(utilities::get_pending_application_reminders).await
     }
 
     pub async fn list_user_application_reminders(&self, user_id: i64) -> Result<Vec<JobApplication>, rusqlite::Error> {
@@ -314,7 +316,7 @@ impl Database {
     }
 
     pub async fn get_pending_reminders(&self) -> Result<Vec<Reminder>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::get_pending_reminders(conn)).await
+        self.with_conn(utilities::get_pending_reminders).await
     }
 
     pub async fn get_application_status_history(

@@ -287,6 +287,7 @@ pub fn update_cv_extracted_data(
 // ============================================================================
 
 /// Crée une nouvelle candidature
+#[allow(clippy::too_many_arguments)]
 pub fn create_application(
     conn: &Connection,
     user_id: i64,
@@ -345,6 +346,7 @@ pub fn update_application_analysis(
 }
 
 /// Met à jour une candidature avec l'analyse salariale
+#[allow(clippy::too_many_arguments)]
 pub fn update_application_salary(
     conn: &Connection,
     application_id: i64,

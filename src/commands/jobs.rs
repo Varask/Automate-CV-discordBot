@@ -897,19 +897,11 @@ fn build_status_buttons(application_id: i64, current_status: &str) -> Vec<Create
     let buttons_row2 = CreateActionRow::Buttons(vec![
         CreateButton::new(format!("status_{}_{}", application_id, "accepted"))
             .label("✅ Acceptée")
-            .style(if current_status == "accepted" {
-                ButtonStyle::Success
-            } else {
-                ButtonStyle::Success
-            })
+            .style(ButtonStyle::Success)
             .disabled(current_status == "accepted"),
         CreateButton::new(format!("status_{}_{}", application_id, "rejected"))
             .label("❌ Refusée")
-            .style(if current_status == "rejected" {
-                ButtonStyle::Danger
-            } else {
-                ButtonStyle::Danger
-            })
+            .style(ButtonStyle::Danger)
             .disabled(current_status == "rejected"),
     ]);
 
@@ -917,6 +909,7 @@ fn build_status_buttons(application_id: i64, current_status: &str) -> Vec<Create
 }
 
 /// Reconstruit l'embed de suivi à partir d'une application existante
+#[allow(clippy::too_many_arguments)]
 pub fn rebuild_tracking_embed_from_status(
     company: &str,
     title: &str,
