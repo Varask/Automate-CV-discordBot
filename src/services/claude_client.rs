@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
-use tracing::{debug, info, error};
+use tracing::{debug, info, error, warn};
 
 #[derive(Error, Debug)]
 pub enum ClaudeError {
@@ -47,17 +47,44 @@ impl ClaudeClient {
         Ok(response.status().is_success())
     }
 
+    /// HTTP POST with exponential backoff retry (3 attempts: 0s, 1s, 2s delays)
+    async fn post_with_retry(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, ClaudeError> {
+        let delays_secs = [0u64, 1, 2];
+        let mut last_err = None;
+
+        for (attempt, &delay) in delays_secs.iter().enumerate() {
+            if delay > 0 {
+                warn!("Retry attempt {} for {} (waiting {}s)", attempt, url, delay);
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            }
+
+            match self.client.post(url).json(body).send().await {
+                Ok(resp) if resp.status().is_server_error() => {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    last_err = Some(ClaudeError::Api(format!("HTTP {}: {}", status, text)));
+                }
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    last_err = Some(ClaudeError::Http(e));
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| ClaudeError::Api("All retry attempts failed".to_string())))
+    }
+
     /// Send a generic prompt to Claude
     pub async fn prompt(&self, prompt: &str) -> Result<String, ClaudeError> {
         let url = format!("{}/prompt", self.base_url);
 
         debug!("Sending prompt to {}", url);
 
-        let response = self.client
-            .post(&url)
-            .json(&json!({ "prompt": prompt }))
-            .send()
-            .await?;
+        let response = self.post_with_retry(&url, &json!({ "prompt": prompt })).await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -84,11 +111,7 @@ impl ClaudeClient {
 
         info!("Synthesizing job offer");
 
-        let response = self.client
-            .post(&url)
-            .json(&json!({ "job_description": job_description }))
-            .send()
-            .await?;
+        let response = self.post_with_retry(&url, &json!({ "job_description": job_description })).await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -132,11 +155,7 @@ impl ClaudeClient {
             payload["experience_notes"] = json!(notes);
         }
 
-        let response = self.client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await?;
+        let response = self.post_with_retry(&url, &payload).await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -169,14 +188,10 @@ impl ClaudeClient {
 
         info!("Analyzing salary");
 
-        let response = self.client
-            .post(&url)
-            .json(&json!({
-                "job_description": job_description,
-                "location": location.unwrap_or("France")
-            }))
-            .send()
-            .await?;
+        let response = self.post_with_retry(&url, &json!({
+            "job_description": job_description,
+            "location": location.unwrap_or("France")
+        })).await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -205,11 +220,7 @@ impl ClaudeClient {
 
         info!("Extracting PDF text");
 
-        let response = self.client
-            .post(&url)
-            .json(&json!({ "pdf_base64": pdf_base64 }))
-            .send()
-            .await?;
+        let response = self.post_with_retry(&url, &json!({ "pdf_base64": pdf_base64 })).await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -271,11 +282,7 @@ impl ClaudeClient {
             payload["experience_notes"] = json!(notes);
         }
 
-        let response = self.client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await?;
+        let response = self.post_with_retry(&url, &payload).await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -349,11 +356,7 @@ impl ClaudeClient {
             payload["single_page"] = json!(true);
         }
 
-        let response = self.client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await?;
+        let response = self.post_with_retry(&url, &payload).await?;
 
         if !response.status().is_success() {
             let status = response.status();

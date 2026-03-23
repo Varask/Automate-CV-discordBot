@@ -9,7 +9,7 @@ import subprocess
 import os
 import base64
 import tempfile
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 import traceback
 
@@ -1412,7 +1412,7 @@ NE PAS INVENTER d'expériences, mais reformuler honnêtement celles existantes p
 
 
 def main():
-    server = HTTPServer(("0.0.0.0", PORT), ClaudeHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), ClaudeHandler)
     print(f"🚀 Claude HTTP Server running on port {PORT}")
     print(f"📄 PDF Extractor: {PDF_EXTRACTOR or 'None (install pdfplumber)'}")
     print(f"📄 PDF Generator: {PDF_GENERATOR or 'None (install reportlab)'}")
