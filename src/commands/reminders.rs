@@ -6,8 +6,7 @@ use serenity::all::{
 use tracing::info;
 use chrono::{NaiveDateTime, Utc, Duration};
 
-use super::{CommandError, SlashCommand};
-use crate::db::Database;
+use super::{CommandError, SlashCommand, get_database};
 
 const COLOR_REMINDER: Colour = Colour::from_rgb(241, 196, 15);
 
@@ -68,6 +67,14 @@ impl SlashCommand for SetReminderCommand {
                 )
                 .required(false),
             )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "time",
+                    "Time for the reminder (HH:MM format, default: 09:00)",
+                )
+                .required(false),
+            )
     }
 
     async fn execute(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<(), CommandError> {
@@ -101,13 +108,18 @@ impl SlashCommand for SetReminderCommand {
             .and_then(|opt| opt.value.as_str())
             .map(|s| s.to_string());
 
+        let time_str = interaction
+            .data
+            .options
+            .iter()
+            .find(|opt| opt.name == "time")
+            .and_then(|opt| opt.value.as_str())
+            .map(|s| s.to_string());
+
+        let (hour, minute) = parse_time_option(time_str)?;
+
         // Get database
-        let db = {
-            let data = ctx.data.read().await;
-            data.get::<Database>()
-                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone()
-        };
+        let db = get_database(ctx).await?;
 
         // Verify application exists and belongs to user
         let app = db.get_application(application_id)
@@ -120,11 +132,12 @@ impl SlashCommand for SetReminderCommand {
 
         // Calculate reminder date
         let reminder_datetime = if let Some(date) = date_str {
-            NaiveDateTime::parse_from_str(&format!("{} 09:00:00", date), "%Y-%m-%d %H:%M:%S")
+            NaiveDateTime::parse_from_str(&format!("{} {:02}:{:02}:00", date, hour, minute), "%Y-%m-%d %H:%M:%S")
                 .map_err(|_| CommandError::InvalidInput("Invalid date format. Use YYYY-MM-DD".to_string()))?
         } else {
             let days_offset = days.unwrap_or(7);
-            (Utc::now() + Duration::days(days_offset)).naive_utc()
+            let base = (Utc::now() + Duration::days(days_offset)).naive_utc();
+            base.date().and_hms_opt(hour, minute, 0).unwrap_or(base)
         };
 
         let reminder_date_str = reminder_datetime.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -196,12 +209,7 @@ impl SlashCommand for ListRemindersCommand {
 
         let user_id = interaction.user.id.get() as i64;
 
-        let db = {
-            let data = ctx.data.read().await;
-            data.get::<Database>()
-                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone()
-        };
+        let db = get_database(ctx).await?;
 
         // Get application reminders
         let app_reminders = db.list_user_application_reminders(user_id)
@@ -339,12 +347,7 @@ impl SlashCommand for ClearReminderCommand {
             .and_then(|opt| opt.value.as_i64())
             .ok_or_else(|| CommandError::MissingParameter("application_id".to_string()))?;
 
-        let db = {
-            let data = ctx.data.read().await;
-            data.get::<Database>()
-                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone()
-        };
+        let db = get_database(ctx).await?;
 
         // Verify application exists and belongs to user
         let app = db.get_application(application_id)
@@ -437,6 +440,14 @@ impl SlashCommand for CreateReminderCommand {
                 )
                 .required(false),
             )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "time",
+                    "Time for the reminder (HH:MM format, default: 09:00)",
+                )
+                .required(false),
+            )
     }
 
     async fn execute(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<(), CommandError> {
@@ -470,20 +481,26 @@ impl SlashCommand for CreateReminderCommand {
             .and_then(|opt| opt.value.as_str())
             .map(|s| s.to_string());
 
-        let db = {
-            let data = ctx.data.read().await;
-            data.get::<Database>()
-                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone()
-        };
+        let time_str = interaction
+            .data
+            .options
+            .iter()
+            .find(|opt| opt.name == "time")
+            .and_then(|opt| opt.value.as_str())
+            .map(|s| s.to_string());
+
+        let (hour, minute) = parse_time_option(time_str)?;
+
+        let db = get_database(ctx).await?;
 
         // Calculate reminder date
         let reminder_datetime = if let Some(date) = date_str {
-            NaiveDateTime::parse_from_str(&format!("{} 09:00:00", date), "%Y-%m-%d %H:%M:%S")
+            NaiveDateTime::parse_from_str(&format!("{} {:02}:{:02}:00", date, hour, minute), "%Y-%m-%d %H:%M:%S")
                 .map_err(|_| CommandError::InvalidInput("Invalid date format. Use YYYY-MM-DD".to_string()))?
         } else {
             let days_offset = days.unwrap_or(1);
-            (Utc::now() + Duration::days(days_offset)).naive_utc()
+            let base = (Utc::now() + Duration::days(days_offset)).naive_utc();
+            base.date().and_hms_opt(hour, minute, 0).unwrap_or(base)
         };
 
         let reminder_date_str = reminder_datetime.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -568,12 +585,7 @@ impl SlashCommand for DeleteReminderCommand {
             .and_then(|opt| opt.value.as_i64())
             .ok_or_else(|| CommandError::MissingParameter("reminder_id".to_string()))?;
 
-        let db = {
-            let data = ctx.data.read().await;
-            data.get::<Database>()
-                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone()
-        };
+        let db = get_database(ctx).await?;
 
         let deleted = db.delete_reminder(reminder_id, user_id)
             .map_err(|e| CommandError::Internal(format!("Failed to delete reminder: {}", e)))?;
@@ -592,4 +604,24 @@ impl SlashCommand for DeleteReminderCommand {
 
         Ok(())
     }
+}
+
+// ============================================================================
+// Helper: parse time string (HH:MM) into (hour, minute)
+// ============================================================================
+
+fn parse_time_option(time_str: Option<String>) -> Result<(u32, u32), CommandError> {
+    let t = time_str.unwrap_or_else(|| "09:00".to_string());
+    let parts: Vec<&str> = t.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        return Err(CommandError::InvalidInput("Invalid time format. Use HH:MM (e.g. 14:30)".to_string()));
+    }
+    let hour: u32 = parts[0].parse()
+        .map_err(|_| CommandError::InvalidInput("Invalid hour in time".to_string()))?;
+    let minute: u32 = parts[1].parse()
+        .map_err(|_| CommandError::InvalidInput("Invalid minute in time".to_string()))?;
+    if hour > 23 || minute > 59 {
+        return Err(CommandError::InvalidInput("Time out of range (HH: 0-23, MM: 0-59)".to_string()));
+    }
+    Ok((hour, minute))
 }

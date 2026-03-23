@@ -7,10 +7,8 @@ use serenity::all::{
 };
 use tracing::{error, info, warn};
 
-use super::{CommandError, SlashCommand};
-use crate::db::Database;
+use super::{CommandError, SlashCommand, get_claude_client, get_database};
 use crate::services::{ClaudeClient, JobSynthesis, SalaryAnalysis, SkillsMatch};
-use crate::ClaudeClientKey;
 
 // Couleurs des embeds
 const COLOR_SYNTHESIS: Colour = Colour::from_rgb(46, 204, 113);   // Vert
@@ -139,9 +137,9 @@ impl SlashCommand for ApplyJobCommand {
 
         // Get options
         let text_description = get_optional_string_option(interaction, "description");
-        let _job_url = get_optional_string_option(interaction, "url");
-        let _company = get_optional_string_option(interaction, "company");
-        let _title = get_optional_string_option(interaction, "title");
+        let job_url = get_optional_string_option(interaction, "url");
+        let company_override = get_optional_string_option(interaction, "company");
+        let title_override = get_optional_string_option(interaction, "title");
         let fit_level = get_optional_int_option(interaction, "fit").unwrap_or(1) as u8;
         let language = get_optional_string_option(interaction, "language").unwrap_or_else(|| "fr".to_string());
         let notes = get_optional_string_option(interaction, "notes");
@@ -177,19 +175,55 @@ impl SlashCommand for ApplyJobCommand {
             }
         };
 
-        // Récupérer le client Claude et la DB
-        let (claude_client, db) = {
-            let data = ctx.data.read().await;
-            let claude = data.get::<ClaudeClientKey>()
-                .ok_or_else(|| CommandError::Internal("Claude client not found".to_string()))?
-                .clone();
-            let db = data.get::<Database>()
-                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone();
-            (claude, db)
-        };
-
         info!("Processing job application for user {}", user_id);
+
+        // Timeout global sur l'ensemble du workflow (10 min max)
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(600),
+            self.run_apply_job(
+                ctx, interaction, user_id, channel_id,
+                job_description, job_url, company_override, title_override,
+                fit_level, language, notes,
+            ),
+        ).await;
+
+        match result {
+            Ok(inner) => return inner,
+            Err(_) => {
+                return interaction
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(
+                            "⏱️ **Délai dépassé** — Le traitement a pris plus de 10 minutes.\n\
+                            Le serveur Claude est peut-être surchargé. Réessayez dans quelques instants."
+                        ),
+                    )
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| CommandError::ResponseFailed(e.to_string()));
+            }
+        }
+    }
+}
+
+impl ApplyJobCommand {
+    #[allow(clippy::too_many_arguments)]
+    async fn run_apply_job(
+        &self,
+        ctx: &Context,
+        interaction: &CommandInteraction,
+        user_id: serenity::all::UserId,
+        channel_id: serenity::all::ChannelId,
+        job_description: String,
+        job_url: Option<String>,
+        company_override: Option<String>,
+        title_override: Option<String>,
+        fit_level: u8,
+        language: String,
+        notes: Option<String>,
+    ) -> Result<(), CommandError> {
+        let claude_client = get_claude_client(ctx).await?;
+        let db = get_database(ctx).await?;
 
         // Envoyer un embed de suivi initial dans le canal principal
         let initial_tracking_embed = build_tracking_embed_progress("Synthèse de l'offre...", None, None);
@@ -220,15 +254,18 @@ impl SlashCommand for ApplyJobCommand {
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         // Sauvegarder la candidature en DB
-        let cv_id = user_cv.as_ref().map(|cv| cv.id).unwrap_or(0);
+        let cv_id = user_cv.as_ref().map(|cv| cv.id); // None si pas de CV → FK nullable
+        // Utiliser les overrides fournis par l'utilisateur en priorité sur la synthèse
+        let final_title = title_override.as_deref().unwrap_or(&synthesis.title);
+        let final_company = company_override.as_deref().unwrap_or(&synthesis.company);
         let application_id = db
             .create_application(
                 user_id.get() as i64,
                 cv_id,
-                Some(&synthesis.title),
-                Some(&synthesis.company),
+                Some(final_title),
+                Some(final_company),
                 Some(&synthesis.location),
-                None, // job_url
+                job_url.as_deref(),
                 &job_description,
             )
             .map_err(|e| CommandError::Internal(format!("Failed to save application: {}", e)))?;
@@ -243,9 +280,9 @@ impl SlashCommand for ApplyJobCommand {
         info!("Created application {} for user {}", application_id, user_id);
 
         // Créer le thread pour les résultats détaillés
-        let thread_name = format!("📋 {} - {}", synthesis.company, synthesis.title);
+        let thread_name = format!("📋 {} - {}", final_company, final_title);
         let thread_name = if thread_name.len() > 100 {
-            format!("{}...", &thread_name[..97])
+            format!("{}...", safe_truncate_bytes(&thread_name, 97))
         } else {
             thread_name
         };
@@ -446,13 +483,19 @@ impl SlashCommand for ApplyJobCommand {
                     let cv_text = generated_cv.get_content();
                     let username = &interaction.user.name;
 
+                    // Heuristique: si le contenu est long, forcer single_page dès la première tentative
+                    let try_single_page_first = cv_text.len() > 8000;
+                    if try_single_page_first {
+                        info!("CV content is large ({} bytes), using single_page=true directly", cv_text.len());
+                    }
+
                     match claude_client
-                        .generate_pdf(cv_text, username, &synthesis.title, &synthesis.company, false)
+                        .generate_pdf(cv_text, username, &synthesis.title, &synthesis.company, try_single_page_first)
                         .await
                     {
                         Ok(pdf_bytes) => {
                             let page_count = ClaudeClient::count_pdf_pages(&pdf_bytes);
-                            let final_pdf = if page_count > 1 {
+                            let final_pdf = if !try_single_page_first && page_count > 1 {
                                 info!("CV PDF has {} pages, retrying with single_page=true", page_count);
                                 match claude_client
                                     .generate_pdf(cv_text, username, &synthesis.title, &synthesis.company, true)
@@ -1158,6 +1201,89 @@ impl SlashCommand for MyStatsCommand {
 }
 
 // ============================================================================
+// ApplicationHistoryCommand — /history
+// ============================================================================
+
+pub struct ApplicationHistoryCommand;
+
+impl ApplicationHistoryCommand {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for ApplicationHistoryCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl SlashCommand for ApplicationHistoryCommand {
+    fn name(&self) -> &'static str {
+        "history"
+    }
+
+    fn description(&self) -> &'static str {
+        "View status change history for an application"
+    }
+
+    fn register(&self) -> CreateCommand {
+        CreateCommand::new(self.name())
+            .description(self.description())
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "application_id",
+                    "Application ID to view history for",
+                )
+                .required(true),
+            )
+    }
+
+    async fn execute(
+        &self,
+        ctx: &Context,
+        interaction: &CommandInteraction,
+    ) -> Result<(), CommandError> {
+        let user_id = interaction.user.id.get() as i64;
+        let application_id = get_int_option(interaction, "application_id")?;
+
+        let db = get_database(ctx).await?;
+
+        // Verify the application belongs to the user
+        let app = db.get_application(application_id)
+            .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?
+            .ok_or_else(|| CommandError::NotFound(format!("Application #{} not found", application_id)))?;
+
+        if app.user_id != user_id {
+            return send_response(ctx, interaction, "❌ Cette candidature ne vous appartient pas.").await;
+        }
+
+        let history = db.get_application_status_history(application_id)
+            .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
+
+        if history.is_empty() {
+            return send_response(ctx, interaction,
+                &format!("📋 Aucun changement de statut pour la candidature #{}.", application_id)).await;
+        }
+
+        let mut lines = vec![format!("📋 **Historique — candidature #{}**", application_id)];
+        for entry in &history {
+            let arrow = match &entry.old_status {
+                Some(old) => format!("{} → {}", old, entry.new_status),
+                None => format!("créée avec statut: {}", entry.new_status),
+            };
+            let note_part = entry.note.as_deref().map(|n| format!(" _({})", n)).unwrap_or_default();
+            lines.push(format!("• `{}` — {}{}", entry.changed_at, arrow, note_part));
+        }
+
+        let response = lines.join("\n");
+        send_response(ctx, interaction, safe_truncate_bytes(&response, 1900)).await
+    }
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -1264,4 +1390,16 @@ async fn send_response(
         .create_response(&ctx.http, CreateInteractionResponse::Message(msg))
         .await
         .map_err(|e| CommandError::ResponseFailed(e.to_string()))
+}
+
+/// Tronque une chaîne à `max_bytes` octets sur une frontière UTF-8 valide.
+fn safe_truncate_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut boundary = max_bytes;
+    while !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &s[..boundary]
 }

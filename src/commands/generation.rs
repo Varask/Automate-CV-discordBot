@@ -5,9 +5,7 @@ use serenity::all::{
 };
 use tracing::{error, info};
 
-use super::{CommandError, SlashCommand};
-use crate::db::Database;
-use crate::ClaudeClientKey;
+use super::{CommandError, SlashCommand, get_claude_client, get_database, get_cv_text};
 
 const COLOR_SYNTHESIS: Colour = Colour::from_rgb(46, 204, 113);
 const COLOR_SALARY: Colour = Colour::from_rgb(230, 126, 34);
@@ -58,13 +56,7 @@ impl SlashCommand for SynthesizeOfferCommand {
 
         let description = get_string_option(interaction, "description")?;
 
-        // Récupérer le client Claude
-        let claude_client = {
-            let data = ctx.data.read().await;
-            data.get::<ClaudeClientKey>()
-                .ok_or_else(|| CommandError::Internal("Claude client not found".to_string()))?
-                .clone()
-        };
+        let claude_client = get_claude_client(ctx).await?;
 
         info!("Synthesizing job offer");
 
@@ -151,37 +143,15 @@ impl SlashCommand for GenerateResumeCommand {
         let job_description = get_string_option(interaction, "job_description")?;
         let user_id = interaction.user.id;
 
-        // Récupérer le client Claude et la DB
-        let (claude_client, db) = {
-            let data = ctx.data.read().await;
-            let claude = data.get::<ClaudeClientKey>()
-                .ok_or_else(|| CommandError::Internal("Claude client not found".to_string()))?
-                .clone();
-            let db = data.get::<Database>()
-                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone();
-            (claude, db)
-        };
+        let claude_client = get_claude_client(ctx).await?;
+        let db = get_database(ctx).await?;
 
         // Récupérer le CV de l'utilisateur
         let user_cv = db.get_active_cv(user_id.get() as i64)
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         let cv_content = match &user_cv {
-            Some(cv) => {
-                // Priorité au texte extrait (pour les PDF)
-                if let Some(ref text) = cv.extracted_text {
-                    if !text.is_empty() {
-                        text.clone()
-                    } else {
-                        tokio::fs::read_to_string(&cv.file_path).await
-                            .unwrap_or_else(|_| "CV non lisible".to_string())
-                    }
-                } else {
-                    tokio::fs::read_to_string(&cv.file_path).await
-                        .unwrap_or_else(|_| "CV non lisible".to_string())
-                }
-            }
+            Some(cv) => get_cv_text(cv).await,
             None => {
                 return followup_response(ctx, interaction,
                     "❌ **Aucun CV trouvé**\n\nUtilisez `/sendcv` pour uploader votre CV d'abord."
@@ -301,17 +271,8 @@ impl SlashCommand for GenerateCoverLetterCommand {
             .find(|opt| opt.name == "application_id")
             .and_then(|opt| opt.value.as_i64());
 
-        // Récupérer Claude et DB
-        let (claude_client, db) = {
-            let data = ctx.data.read().await;
-            let claude = data.get::<ClaudeClientKey>()
-                .ok_or_else(|| CommandError::Internal("Claude client not found".to_string()))?
-                .clone();
-            let db = data.get::<Database>()
-                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone();
-            (claude, db)
-        };
+        let claude_client = get_claude_client(ctx).await?;
+        let db = get_database(ctx).await?;
 
         // If application_id provided, verify it belongs to user
         if let Some(app_id) = application_id {
@@ -335,18 +296,8 @@ impl SlashCommand for GenerateCoverLetterCommand {
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         let cv_content = match &user_cv {
-            Some(cv) => {
-                if let Some(ref text) = cv.extracted_text {
-                    if !text.is_empty() {
-                        text.clone()
-                    } else {
-                        tokio::fs::read_to_string(&cv.file_path).await.unwrap_or_default()
-                    }
-                } else {
-                    tokio::fs::read_to_string(&cv.file_path).await.unwrap_or_default()
-                }
-            }
-            None => String::new()
+            Some(cv) => get_cv_text(cv).await,
+            None => String::new(),
         };
 
         info!("Generating cover letter for user {} with {} chars", user_id, cv_content.len());
@@ -383,7 +334,7 @@ impl SlashCommand for GenerateCoverLetterCommand {
                 // Discord limite les messages à 2000 caractères
                 let truncated = if letter.len() > 1800 {
                     format!("{}...\n\n_[Lettre tronquee - {} caracteres au total]_",
-                        &letter[..1800], letter.len())
+                        safe_truncate(&letter, 1800), letter.len())
                 } else {
                     letter.clone()
                 };
@@ -446,34 +397,15 @@ impl SlashCommand for GenerateMarketAnalysisCommand {
 
         let user_id = interaction.user.id;
 
-        // Récupérer Claude et DB
-        let (claude_client, db) = {
-            let data = ctx.data.read().await;
-            let claude = data.get::<ClaudeClientKey>()
-                .ok_or_else(|| CommandError::Internal("Claude client not found".to_string()))?
-                .clone();
-            let db = data.get::<Database>()
-                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone();
-            (claude, db)
-        };
+        let claude_client = get_claude_client(ctx).await?;
+        let db = get_database(ctx).await?;
 
         // Récupérer le CV pour l'analyse de marché
         let user_cv = db.get_active_cv(user_id.get() as i64)
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         let cv_content = match &user_cv {
-            Some(cv) => {
-                if let Some(ref text) = cv.extracted_text {
-                    if !text.is_empty() {
-                        text.clone()
-                    } else {
-                        tokio::fs::read_to_string(&cv.file_path).await.unwrap_or_default()
-                    }
-                } else {
-                    tokio::fs::read_to_string(&cv.file_path).await.unwrap_or_default()
-                }
-            }
+            Some(cv) => get_cv_text(cv).await,
             None => {
                 return followup_response(ctx, interaction,
                     "❌ **Aucun CV trouvé**\n\nUtilisez `/sendcv` pour uploader votre CV d'abord."
@@ -504,7 +436,7 @@ impl SlashCommand for GenerateMarketAnalysisCommand {
                     .title("📊 ANALYSE DE MARCHÉ")
                     .colour(Colour::from_rgb(52, 73, 94))
                     .description(if response.len() > 1900 {
-                        format!("{}...", &response[..1900])
+                        format!("{}...", safe_truncate(&response, 1900))
                     } else {
                         response
                     });
@@ -522,6 +454,18 @@ impl SlashCommand for GenerateMarketAnalysisCommand {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Tronque une chaîne à `max_bytes` octets sur une frontière de caractère UTF-8 valide.
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut boundary = max_bytes;
+    while !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &s[..boundary]
+}
 
 fn get_string_option(interaction: &CommandInteraction, name: &str) -> Result<String, CommandError> {
     interaction
