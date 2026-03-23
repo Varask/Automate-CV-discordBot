@@ -1,6 +1,6 @@
 // Utilitaires pour les opérations CRUD sur la base de données
 #![allow(dead_code)]
-use rusqlite::{Connection, Result, params, Row, OptionalExtension};
+use rusqlite::{Connection, Result, Row, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -183,7 +183,7 @@ pub fn upsert_user(conn: &Connection, user_id: i64, username: &str) -> Result<()
          ON CONFLICT(id) DO UPDATE SET 
             username = excluded.username,
             updated_at = CURRENT_TIMESTAMP",
-        params![user_id, username],
+        (user_id, username),
     )?;
     Ok(())
 }
@@ -194,7 +194,7 @@ pub fn get_user(conn: &Connection, user_id: i64) -> Result<Option<User>> {
         "SELECT id, username, locale, created_at, updated_at FROM users WHERE id = ?1"
     )?;
     
-    let user = stmt.query_row(params![user_id], map_user).optional()?;
+    let user = stmt.query_row((user_id,), map_user).optional()?;
     Ok(user)
 }
 
@@ -215,14 +215,14 @@ pub fn save_cv(
     // Désactiver les anciens CVs de l'utilisateur
     conn.execute(
         "UPDATE base_cvs SET is_active = 0 WHERE user_id = ?1",
-        params![user_id],
+        (user_id,),
     )?;
 
     // Insérer le nouveau CV
     conn.execute(
         "INSERT INTO base_cvs (user_id, filename, original_name, file_path, file_size, mime_type, is_active)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
-        params![user_id, filename, original_name, file_path, file_size, mime_type],
+        (user_id, filename, original_name, file_path, file_size, mime_type),
     )?;
 
     Ok(conn.last_insert_rowid())
@@ -237,7 +237,7 @@ pub fn get_active_cv(conn: &Connection, user_id: i64) -> Result<Option<BaseCv>> 
          WHERE user_id = ?1 AND is_active = 1"
     )?;
 
-    let cv = stmt.query_row(params![user_id], map_base_cv).optional()?;
+    let cv = stmt.query_row((user_id,), map_base_cv).optional()?;
     Ok(cv)
 }
 
@@ -252,7 +252,7 @@ pub fn list_user_cvs(conn: &Connection, user_id: i64) -> Result<Vec<BaseCv>> {
     )?;
 
     let cvs = stmt
-        .query_map(params![user_id], map_base_cv)?
+        .query_map((user_id,), map_base_cv)?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -263,7 +263,7 @@ pub fn list_user_cvs(conn: &Connection, user_id: i64) -> Result<Vec<BaseCv>> {
 pub fn delete_active_cv(conn: &Connection, user_id: i64) -> Result<bool> {
     let rows = conn.execute(
         "DELETE FROM base_cvs WHERE user_id = ?1 AND is_active = 1",
-        params![user_id],
+        (user_id,),
     )?;
     Ok(rows > 0)
 }
@@ -277,7 +277,7 @@ pub fn update_cv_extracted_data(
 ) -> Result<()> {
     conn.execute(
         "UPDATE base_cvs SET extracted_text = ?1, parsed_data = ?2 WHERE id = ?3",
-        params![extracted_text, parsed_data, cv_id],
+        (extracted_text, parsed_data, cv_id),
     )?;
     Ok(())
 }
@@ -301,7 +301,7 @@ pub fn create_application(
         "INSERT INTO job_applications
          (user_id, base_cv_id, job_title, company, location, job_url, raw_job_description)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![user_id, base_cv_id, job_title, company, location, job_url, raw_job_description],
+        (user_id, base_cv_id, job_title, company, location, job_url, raw_job_description),
     )?;
 
     Ok(conn.last_insert_rowid())
@@ -315,7 +315,7 @@ pub fn update_application_thread(
 ) -> Result<()> {
     conn.execute(
         "UPDATE job_applications SET thread_id = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
-        params![thread_id, application_id],
+        (thread_id, application_id),
     )?;
     Ok(())
 }
@@ -339,7 +339,7 @@ pub fn update_application_analysis(
             match_score = ?5,
             updated_at = CURRENT_TIMESTAMP
          WHERE id = ?6",
-        params![job_synthesis, required_skills, matching_skills, missing_skills, match_score, application_id],
+        (job_synthesis, required_skills, matching_skills, missing_skills, match_score, application_id),
     )?;
     Ok(())
 }
@@ -365,7 +365,7 @@ pub fn update_application_salary(
             market_salary_high = ?6,
             updated_at = CURRENT_TIMESTAMP
          WHERE id = ?7",
-        params![salary_min, salary_max, salary_analysis, market_salary_low, market_salary_mid, market_salary_high, application_id],
+        (salary_min, salary_max, salary_analysis, market_salary_low, market_salary_mid, market_salary_high, application_id),
     )?;
     Ok(())
 }
@@ -383,7 +383,7 @@ pub fn update_application_generated_cv(
             generated_cv_format = ?2,
             updated_at = CURRENT_TIMESTAMP
          WHERE id = ?3",
-        params![generated_cv_path, format, application_id],
+        (generated_cv_path, format, application_id),
     )?;
     Ok(())
 }
@@ -396,7 +396,7 @@ pub fn update_application_notes(
 ) -> Result<()> {
     conn.execute(
         "UPDATE job_applications SET notes = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
-        params![notes, application_id],
+        (notes, application_id),
     )?;
     Ok(())
 }
@@ -414,7 +414,7 @@ pub fn get_application(conn: &Connection, application_id: i64) -> Result<Option<
          FROM job_applications WHERE id = ?1"
     )?;
 
-    let app = stmt.query_row(params![application_id], map_job_application).optional()?;
+    let app = stmt.query_row((application_id,), map_job_application).optional()?;
     Ok(app)
 }
 
@@ -442,7 +442,7 @@ pub fn list_applications(
             );
             let mut stmt = conn.prepare(&sql)?;
             let apps: Vec<JobApplication> = stmt
-                .query_map(params![user_id, status, limit], map_job_application)?
+                .query_map((user_id, status, limit), map_job_application)?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(apps)
@@ -454,7 +454,7 @@ pub fn list_applications(
             );
             let mut stmt = conn.prepare(&sql)?;
             let apps: Vec<JobApplication> = stmt
-                .query_map(params![user_id, limit], map_job_application)?
+                .query_map((user_id, limit), map_job_application)?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(apps)
@@ -475,7 +475,7 @@ pub fn update_application_status(
         "SELECT status FROM job_applications WHERE id = ?1 AND user_id = ?2"
     )?;
     let old_status: Option<String> = stmt
-        .query_row(params![application_id, user_id], |row: &Row| row.get(0))
+        .query_row((application_id, user_id), |row: &Row| row.get(0))
         .optional()?;
 
     if old_status.is_none() {
@@ -494,14 +494,14 @@ pub fn update_application_status(
             "UPDATE job_applications SET status = ?1, updated_at = CURRENT_TIMESTAMP{} WHERE id = ?2",
             applied_at_update
         ),
-        params![new_status, application_id],
+        (new_status, application_id),
     )?;
 
     // Ajouter à l'historique
     conn.execute(
         "INSERT INTO application_status_history (application_id, old_status, new_status, note)
          VALUES (?1, ?2, ?3, ?4)",
-        params![application_id, old_status, new_status, note],
+        (application_id, old_status, new_status, note),
     )?;
 
     Ok(true)
@@ -515,14 +515,14 @@ pub fn update_application_status(
 pub fn get_user_stats(conn: &Connection, user_id: i64) -> Result<UserStats> {
     // Total applications
     let mut stmt = conn.prepare("SELECT COUNT(*) FROM job_applications WHERE user_id = ?1")?;
-    let total: i32 = stmt.query_row(params![user_id], |row: &Row| row.get(0))?;
+    let total: i32 = stmt.query_row((user_id,), |row: &Row| row.get(0))?;
 
     // By status
     let mut stmt = conn.prepare(
         "SELECT status, COUNT(*) FROM job_applications WHERE user_id = ?1 GROUP BY status"
     )?;
     let by_status: Vec<(String, i32)> = stmt
-        .query_map(params![user_id], |row: &Row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map((user_id,), |row: &Row| Ok((row.get(0)?, row.get(1)?)))?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -531,7 +531,7 @@ pub fn get_user_stats(conn: &Connection, user_id: i64) -> Result<UserStats> {
         "SELECT AVG(match_score) FROM job_applications WHERE user_id = ?1 AND match_score IS NOT NULL"
     )?;
     let avg_score: Option<f64> = stmt
-        .query_row(params![user_id], |row: &Row| row.get(0))
+        .query_row((user_id,), |row: &Row| row.get(0))
         .optional()?
         .flatten();
 
@@ -542,7 +542,7 @@ pub fn get_user_stats(conn: &Connection, user_id: i64) -> Result<UserStats> {
          GROUP BY company ORDER BY cnt DESC LIMIT 5"
     )?;
     let top_companies: Vec<(String, i32)> = stmt
-        .query_map(params![user_id], |row: &Row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map((user_id,), |row: &Row| Ok((row.get(0)?, row.get(1)?)))?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -617,7 +617,7 @@ pub fn save_cover_letter(
             cover_letter_generated_at = CURRENT_TIMESTAMP,
             updated_at = CURRENT_TIMESTAMP
          WHERE id = ?2",
-        params![cover_letter, application_id],
+        (cover_letter, application_id),
     )?;
     Ok(())
 }
@@ -628,7 +628,7 @@ pub fn get_cover_letter(conn: &Connection, application_id: i64) -> Result<Option
         "SELECT cover_letter FROM job_applications WHERE id = ?1"
     )?;
     let letter: Option<String> = stmt
-        .query_row(params![application_id], |row| row.get(0))
+        .query_row((application_id,), |row| row.get(0))
         .optional()?
         .flatten();
     Ok(letter)
@@ -646,7 +646,7 @@ pub fn list_applications_with_cover_letters(
     );
     let mut stmt = conn.prepare(&sql)?;
     let apps: Vec<JobApplication> = stmt
-        .query_map(params![user_id, limit], map_job_application)?
+        .query_map((user_id, limit), map_job_application)?
         .filter_map(|r| r.ok())
         .collect();
     Ok(apps)
@@ -668,7 +668,7 @@ pub fn set_application_reminder(
             reminder_sent = 0,
             updated_at = CURRENT_TIMESTAMP
          WHERE id = ?2",
-        params![reminder_date, application_id],
+        (reminder_date, application_id),
     )?;
     Ok(())
 }
@@ -681,7 +681,7 @@ pub fn clear_application_reminder(conn: &Connection, application_id: i64) -> Res
             reminder_sent = 0,
             updated_at = CURRENT_TIMESTAMP
          WHERE id = ?1",
-        params![application_id],
+        (application_id,),
     )?;
     Ok(())
 }
@@ -693,7 +693,7 @@ pub fn mark_application_reminder_sent(conn: &Connection, application_id: i64) ->
             reminder_sent = 1,
             updated_at = CURRENT_TIMESTAMP
          WHERE id = ?1",
-        params![application_id],
+        (application_id,),
     )?;
     Ok(())
 }
@@ -729,7 +729,7 @@ pub fn list_user_application_reminders(
     );
     let mut stmt = conn.prepare(&sql)?;
     let apps: Vec<JobApplication> = stmt
-        .query_map(params![user_id], map_job_application)?
+        .query_map((user_id,), map_job_application)?
         .filter_map(|r| r.ok())
         .collect();
     Ok(apps)
@@ -751,7 +751,7 @@ pub fn create_reminder(
     conn.execute(
         "INSERT INTO reminders (user_id, application_id, channel_id, reminder_date, message)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![user_id, application_id, channel_id, reminder_date, message],
+        (user_id, application_id, channel_id, reminder_date, message),
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -762,7 +762,7 @@ pub fn get_reminder(conn: &Connection, reminder_id: i64) -> Result<Option<Remind
         "SELECT id, user_id, application_id, channel_id, reminder_date, message, is_sent, created_at
          FROM reminders WHERE id = ?1"
     )?;
-    let reminder = stmt.query_row(params![reminder_id], map_reminder).optional()?;
+    let reminder = stmt.query_row((reminder_id,), map_reminder).optional()?;
     Ok(reminder)
 }
 
@@ -774,7 +774,7 @@ pub fn list_user_reminders(conn: &Connection, user_id: i64) -> Result<Vec<Remind
          ORDER BY reminder_date ASC"
     )?;
     let reminders: Vec<Reminder> = stmt
-        .query_map(params![user_id], map_reminder)?
+        .query_map((user_id,), map_reminder)?
         .filter_map(|r| r.ok())
         .collect();
     Ok(reminders)
@@ -784,7 +784,7 @@ pub fn list_user_reminders(conn: &Connection, user_id: i64) -> Result<Vec<Remind
 pub fn delete_reminder(conn: &Connection, reminder_id: i64, user_id: i64) -> Result<bool> {
     let rows = conn.execute(
         "DELETE FROM reminders WHERE id = ?1 AND user_id = ?2",
-        params![reminder_id, user_id],
+        (reminder_id, user_id),
     )?;
     Ok(rows > 0)
 }
@@ -793,7 +793,7 @@ pub fn delete_reminder(conn: &Connection, reminder_id: i64, user_id: i64) -> Res
 pub fn mark_reminder_sent(conn: &Connection, reminder_id: i64) -> Result<()> {
     conn.execute(
         "UPDATE reminders SET is_sent = 1 WHERE id = ?1",
-        params![reminder_id],
+        (reminder_id,),
     )?;
     Ok(())
 }
