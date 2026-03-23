@@ -8,7 +8,6 @@ use tracing::{error, info};
 use super::{CommandError, SlashCommand, get_claude_client, get_database, get_cv_text};
 
 const COLOR_SYNTHESIS: Colour = Colour::from_rgb(46, 204, 113);
-const COLOR_SALARY: Colour = Colour::from_rgb(230, 126, 34);
 
 // ============================================================================
 // SynthesizeOffer Command

@@ -4,7 +4,6 @@ use serenity::all::{
     CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage,
     Permissions,
 };
-use tracing::info;
 
 use super::{CommandError, SlashCommand, get_database};
 

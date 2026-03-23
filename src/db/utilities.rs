@@ -1,4 +1,5 @@
 // Utilitaires pour les opérations CRUD sur la base de données
+#![allow(dead_code)]
 use rusqlite::{Connection, Result, params, Row, OptionalExtension};
 use serde::{Deserialize, Serialize};
 

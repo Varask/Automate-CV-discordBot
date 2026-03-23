@@ -17,6 +17,7 @@ pub struct Database {
     conn: Arc<Mutex<Connection>>,
 }
 
+#[allow(dead_code)]
 impl Database {
     /// Crée une nouvelle instance avec initialisation de la DB
     pub async fn new() -> Result<Self, rusqlite::Error> {

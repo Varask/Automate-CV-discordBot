@@ -48,6 +48,7 @@ pub trait SlashCommand: Send + Sync {
 
 /// Erreur de commande
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum CommandError {
     /// Erreur lors de l'envoi de la réponse
     ResponseFailed(String),
