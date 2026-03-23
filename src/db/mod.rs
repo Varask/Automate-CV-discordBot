@@ -8,7 +8,8 @@ pub use init::init_database;
 pub use utilities::*;
 
 use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Wrapper thread-safe pour la connexion SQLite
 /// Nécessaire car rusqlite::Connection n'est pas Sync
@@ -39,12 +40,13 @@ impl Database {
         })
     }
 
-    /// Exécute une opération avec la connexion
+    /// Exécute une opération avec la connexion.
+    /// Utilise blocking_lock() — safe car aucun await n'est tenu pendant la section critique.
     pub fn with_conn<F, T>(&self, f: F) -> Result<T, rusqlite::Error>
     where
         F: FnOnce(&Connection) -> Result<T, rusqlite::Error>,
     {
-        let conn = self.conn.lock().expect("Database mutex poisoned");
+        let conn = self.conn.blocking_lock();
         f(&conn)
     }
 
