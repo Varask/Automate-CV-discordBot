@@ -3,8 +3,20 @@ use serenity::all::{
     CommandInteraction, CommandOptionType, Context, CreateCommand, CreateCommandOption,
     CreateInteractionResponse, CreateInteractionResponseMessage, Permissions,
 };
+use tracing::info;
 
-use super::{CommandError, SlashCommand};
+use super::{CommandError, SlashCommand, get_database};
+
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut boundary = max_bytes;
+    while !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &s[..boundary]
+}
 
 // ============================================================================
 // ListCvs Command (Admin)
@@ -41,15 +53,27 @@ impl SlashCommand for ListCvsCommand {
     }
 
     async fn execute(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<(), CommandError> {
-        // Vérification des permissions côté serveur aussi
         if !has_admin_permission(interaction) {
             return send_response(ctx, interaction, "❌ You need administrator permissions.").await;
         }
 
-        // TODO: Récupérer tous les CVs
-        let response = "📋 **All stored CVs:**\n• No CVs in database yet.";
-        
-        send_response(ctx, interaction, response).await
+        let db = get_database(ctx).await?;
+        let cvs = db.list_all_cvs()
+            .map_err(|e| CommandError::Internal(format!("DB error: {}", e)))?;
+
+        if cvs.is_empty() {
+            return send_response(ctx, interaction, "📋 **All stored CVs:**\n• No CVs in database.").await;
+        }
+
+        let mut lines = vec!["📋 **All stored CVs:**".to_string()];
+        for (user_id, username, cv) in &cvs {
+            lines.push(format!(
+                "• **{}** (ID: {}) — `{}` — {} bytes — {}",
+                username, user_id, cv.original_name, cv.file_size, cv.created_at
+            ));
+        }
+        let response = lines.join("\n");
+        send_response(ctx, interaction, safe_truncate(&response, 1900)).await
     }
 }
 
@@ -96,17 +120,36 @@ impl SlashCommand for GetCvCommand {
             return send_response(ctx, interaction, "❌ You need administrator permissions.").await;
         }
 
-        let _target_user = interaction
+        let target_user_id = interaction
             .data
             .options
             .iter()
             .find(|opt| opt.name == "user")
+            .and_then(|opt| opt.value.as_user_id())
             .ok_or_else(|| CommandError::MissingParameter("user".to_string()))?;
 
-        // TODO: Récupérer le CV de l'utilisateur ciblé
-        let response = "📄 CV retrieval — coming soon!";
-        
-        send_response(ctx, interaction, response).await
+        let db = get_database(ctx).await?;
+        let cv = db.get_active_cv(target_user_id.get() as i64)
+            .map_err(|e| CommandError::Internal(format!("DB error: {}", e)))?;
+
+        match cv {
+            None => send_response(ctx, interaction, &format!("📄 No active CV for <@{}>.", target_user_id)).await,
+            Some(cv) => {
+                let preview = cv.extracted_text.as_deref()
+                    .filter(|t| !t.is_empty())
+                    .map(|t| safe_truncate(t, 500))
+                    .unwrap_or("(no extracted text)");
+                let response = format!(
+                    "📄 **CV for <@{}>**\n\
+                     • File: `{}`\n\
+                     • Size: {} bytes\n\
+                     • Uploaded: {}\n\
+                     • Preview:\n```\n{}\n```",
+                    target_user_id, cv.original_name, cv.file_size, cv.created_at, preview
+                );
+                send_response(ctx, interaction, safe_truncate(&response, 1900)).await
+            }
+        }
     }
 }
 
@@ -149,10 +192,15 @@ impl SlashCommand for ClearAllCvsCommand {
             return send_response(ctx, interaction, "❌ You need administrator permissions.").await;
         }
 
-        // TODO: Implémenter la suppression de tous les CVs (avec confirmation!)
-        let response = "⚠️ This will delete ALL CVs. Confirmation system coming soon!";
-        
-        send_response(ctx, interaction, response).await
+        let db = get_database(ctx).await?;
+        let count = db.clear_all_cvs()
+            .map_err(|e| CommandError::Internal(format!("DB error: {}", e)))?;
+
+        let admin_name = interaction.user.name.as_str();
+        info!("Admin '{}' cleared all CVs ({} deleted)", admin_name, count);
+
+        let response = format!("🗑️ **{} CV(s) deleted** by admin `{}`.", count, admin_name);
+        send_response(ctx, interaction, &response).await
     }
 }
 
