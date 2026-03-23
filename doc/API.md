@@ -369,7 +369,9 @@ Si Claude retourne une réponse non-JSON, le serveur encapsule la réponse brute
 |-----------|--------|
 | Timeout par requête | 120 secondes |
 | Taille max du body | Illimitée (Python) |
-| Requêtes concurrentes | 1 (sérialisé par le CLI) |
+| Requêtes concurrentes | Multiples (`ThreadingHTTPServer`) — chaque requête tourne dans son propre thread |
+
+**Note:** Les appels Claude (`subprocess`) sont indépendants par thread. Plusieurs utilisateurs peuvent déclencher des requêtes simultanément sans se bloquer mutuellement.
 
 ---
 

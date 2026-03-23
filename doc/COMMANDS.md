@@ -14,14 +14,20 @@ Ce document détaille toutes les commandes slash disponibles dans le bot Automat
 | **Candidature** | `/applyjob` | Analyser une offre et générer un CV adapté |
 | | `/status` | Voir ses candidatures |
 | | `/updatestatus` | Mettre à jour le statut d'une candidature |
+| | `/history` | Historique des changements de statut |
 | | `/mystats` | Voir ses statistiques |
+| **Rappels** | `/setreminder` | Définir un rappel pour une candidature |
+| | `/listreminders` | Lister ses rappels |
+| | `/clearreminder` | Supprimer le rappel d'une candidature |
+| | `/createreminder` | Créer un rappel libre |
+| | `/deletereminder` | Supprimer un rappel |
 | **IA (Legacy)** | `/synthesizeoffer` | Synthétiser une offre |
 | | `/generateresume` | Générer un CV adapté |
 | | `/generatecoverletter` | Générer une lettre de motivation |
 | | `/generatemarketanalysis` | Analyse de marché |
 | **Admin** | `/listcvs` | Lister tous les CVs |
 | | `/getcv` | Récupérer le CV d'un utilisateur |
-| | `/clearallcvs` | Supprimer tous les CVs |
+| | `/clearallcvs` | Supprimer tous les CVs (avec confirmation) |
 | **Aide** | `/help` | Afficher l'aide |
 
 ---
@@ -95,8 +101,8 @@ Supprime le CV actif de l'utilisateur.
 
 **Comportement:**
 1. Récupère le CV actif de l'utilisateur
-2. Supprime le fichier physique
-3. Supprime l'entrée en base de données
+2. Supprime l'entrée en base de données
+3. Supprime le fichier physique (échec non-bloquant, loggé)
 
 **Exemples de réponses:**
 
@@ -156,7 +162,7 @@ Commande principale du bot. Analyse une offre d'emploi et génère:
 
 **Usage:**
 ```
-/applyjob description:<texte> [url:<url>] [company:<nom>] [title:<titre>]
+/applyjob description:<texte> [url:<url>] [company:<nom>] [title:<titre>] [notes:<texte>]
 ```
 
 **Paramètres:**
@@ -164,25 +170,28 @@ Commande principale du bot. Analyse une offre d'emploi et génère:
 | Nom | Type | Requis | Description |
 |-----|------|--------|-------------|
 | `description` | String | Oui | Description complète de l'offre |
-| `url` | String | Non | URL de l'offre |
-| `company` | String | Non | Nom de l'entreprise |
-| `title` | String | Non | Titre du poste |
+| `url` | String | Non | URL de l'offre (affiché en lien cliquable) |
+| `company` | String | Non | Nom de l'entreprise (override la détection IA) |
+| `title` | String | Non | Titre du poste (override la détection IA) |
+| `notes` | String | Non | Notes d'expérience à intégrer dans le CV généré |
 
 **Comportement:**
-1. Defer la réponse (opération longue)
+1. Defer la réponse (opération longue, timeout global 10 min)
 2. Appelle `/synthesize` sur le serveur Claude
-3. Affiche l'embed de synthèse (vert)
-4. Récupère le CV actif de l'utilisateur
-5. Appelle `/match-skills` sur le serveur Claude
-6. Affiche l'embed de compétences (jaune)
-7. Appelle `/salary-analysis` sur le serveur Claude
-8. Affiche l'embed salarial (orange)
-9. Appelle `/generate-cv` sur le serveur Claude
-10. Affiche l'embed CV généré (bleu)
+3. Crée un thread Discord pour les résultats détaillés
+4. Affiche l'embed de synthèse (vert) dans le canal principal
+5. Récupère le CV actif de l'utilisateur
+6. Appelle `/match-skills` sur le serveur Claude
+7. Affiche l'embed de compétences (jaune) dans le thread
+8. Appelle `/salary-analysis` sur le serveur Claude
+9. Affiche l'embed salarial (orange) dans le thread
+10. Appelle `/generate-cv` sur le serveur Claude
+11. Envoie le PDF CV généré dans le thread
+12. Met à jour l'embed de suivi avec boutons de statut
 
-**Durée:** 30s à 2min selon la complexité
+**Durée:** 30s à 5min selon la complexité
 
-**Résultat:** 4 embeds Discord
+**Résultat:** Embed de suivi dans le canal + thread dédié avec tous les détails
 
 #### Embed 1: Synthèse de l'offre (Vert)
 
@@ -328,6 +337,34 @@ Application #42 → interview
 
 ---
 
+### /history
+
+Affiche l'historique des changements de statut d'une candidature.
+
+**Usage:**
+```
+/history application_id:<id>
+```
+
+**Paramètres:**
+
+| Nom | Type | Requis | Description |
+|-----|------|--------|-------------|
+| `application_id` | Integer | Oui | ID de la candidature (depuis `/status`) |
+
+**Exemple de réponse:**
+```
+📋 Historique candidature #42
+
+🔄 generated → applied
+   📅 2025-01-22 | 📝 Candidature envoyée via le site
+
+🔄 applied → interview
+   📅 2025-01-25 | 📝 Premier entretien RH le 28/01
+```
+
+---
+
 ### /mystats
 
 Affiche les statistiques de candidature de l'utilisateur.
@@ -355,6 +392,85 @@ Affiche les statistiques de candidature de l'utilisateur.
    1. TechCorp (3)
    2. StartupXYZ (2)
    3. BigCo (2)
+```
+
+---
+
+## Commandes Rappels
+
+### /setreminder
+
+Définit un rappel de suivi pour une candidature existante.
+
+**Usage:**
+```
+/setreminder application_id:<id> [days:<n>] [date:<YYYY-MM-DD>] [time:<HH:MM>]
+```
+
+**Paramètres:**
+
+| Nom | Type | Requis | Description |
+|-----|------|--------|-------------|
+| `application_id` | Integer | Oui | ID de la candidature |
+| `days` | Integer | Non | Délai en jours (1-90, défaut: 7) |
+| `date` | String | Non | Date exacte au format YYYY-MM-DD |
+| `time` | String | Non | Heure au format HH:MM (défaut: 09:00) |
+
+**Note:** `days` et `date` sont mutuellement exclusifs. Si les deux sont fournis, `date` prime.
+
+---
+
+### /listreminders
+
+Liste tous les rappels de l'utilisateur (candidatures et rappels libres).
+
+**Usage:**
+```
+/listreminders
+```
+
+---
+
+### /clearreminder
+
+Supprime le rappel associé à une candidature.
+
+**Usage:**
+```
+/clearreminder application_id:<id>
+```
+
+---
+
+### /createreminder
+
+Crée un rappel libre (non lié à une candidature).
+
+**Usage:**
+```
+/createreminder message:<texte> [days:<n>] [date:<YYYY-MM-DD>] [time:<HH:MM>]
+```
+
+**Paramètres:**
+
+| Nom | Type | Requis | Description |
+|-----|------|--------|-------------|
+| `message` | String | Oui | Texte du rappel |
+| `days` | Integer | Non | Délai en jours (défaut: 1) |
+| `date` | String | Non | Date exacte au format YYYY-MM-DD |
+| `time` | String | Non | Heure au format HH:MM (défaut: 09:00) |
+
+Le rappel sera posté dans le canal où la commande a été tapée.
+
+---
+
+### /deletereminder
+
+Supprime un rappel libre par son ID.
+
+**Usage:**
+```
+/deletereminder reminder_id:<id>
 ```
 
 ---
@@ -397,10 +513,21 @@ Génère une lettre de motivation.
 
 **Usage:**
 ```
-/generatecoverletter job_description:<texte>
+/generatecoverletter job_description:<texte> [application_id:<id>]
 ```
 
+**Paramètres:**
+
+| Nom | Type | Requis | Description |
+|-----|------|--------|-------------|
+| `job_description` | String | Oui | Description du poste |
+| `application_id` | Integer | Non | ID de candidature à lier (depuis `/status`) |
+
 **Prérequis:** CV uploadé via `/sendcv` (optionnel mais recommandé)
+
+**Comportement avec `application_id`:**
+- Sauvegarde la lettre dans la candidature en base
+- Poste automatiquement la lettre dans le thread Discord de la candidature
 
 **Résultat:** Embed avec la lettre de motivation générée
 
@@ -477,7 +604,10 @@ Supprime tous les CVs stockés. **Action irréversible.**
 
 **Permission:** Administrateur
 
-**Note:** Demande une confirmation avant exécution (à implémenter)
+**Comportement:**
+1. Affiche un message avec deux boutons : **Confirmer suppression** (rouge) et **Annuler** (gris)
+2. Sur confirmation : supprime tous les CVs en base et les fichiers physiques, log l'action admin
+3. Sur annulation : ferme le dialogue sans rien supprimer
 
 ---
 

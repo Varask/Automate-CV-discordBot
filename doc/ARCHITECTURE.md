@@ -59,11 +59,12 @@ Automate-CV-discordBot/
 │   ├── main.rs             # Point d'entrée, initialisation
 │   │
 │   ├── commands/           # Commandes Discord slash
-│   │   ├── mod.rs          # Trait SlashCommand + CommandRegistry
+│   │   ├── mod.rs          # Trait SlashCommand + CommandRegistry (HashMap)
 │   │   ├── cv.rs           # /sendcv, /deletecv, /listmycvs
-│   │   ├── jobs.rs         # /applyjob, /status, /updatestatus, /mystats
+│   │   ├── jobs.rs         # /applyjob, /status, /updatestatus, /mystats, /history
 │   │   ├── generation.rs   # /synthesizeoffer, /generateresume, etc.
 │   │   ├── admin.rs        # /listcvs, /getcv, /clearallcvs
+│   │   ├── reminders.rs    # /setreminder, /listreminders, /clearreminder, /createreminder, /deletereminder
 │   │   └── help.rs         # /help
 │   │
 │   ├── db/                 # Couche base de données
@@ -128,11 +129,11 @@ pub trait SlashCommand: Send + Sync {
 }
 ```
 
-**CommandRegistry:** Centralise l'enregistrement et le dispatch
+**CommandRegistry:** Centralise l'enregistrement et le dispatch (O(1) via `HashMap`)
 
 ### 3. Base de données SQLite
 
-**Wrapper thread-safe:** `Arc<Mutex<Connection>>`
+**Wrapper thread-safe:** `Arc<tokio::sync::Mutex<Connection>>` — `lock().await` cède le scheduler entre opérations
 
 **Tables:**
 
@@ -141,13 +142,16 @@ pub trait SlashCommand: Send + Sync {
 | `users` | Discord user ID | Profils utilisateurs |
 | `base_cvs` | Auto-increment | CVs uploadés |
 | `job_applications` | Auto-increment | Candidatures avec analyses |
-| `application_status_history` | Auto-increment | Historique des statuts |
+| `application_status_history` | Auto-increment | Historique des changements de statut |
+| `reminders` | Auto-increment | Rappels libres (standalone) |
+| `schema_migrations` | version | Suivi des migrations DB |
 
 **Relations:**
 - `base_cvs.user_id` → `users.id`
 - `job_applications.user_id` → `users.id`
-- `job_applications.base_cv_id` → `base_cvs.id`
+- `job_applications.base_cv_id` → `base_cvs.id` (nullable)
 - `application_status_history.application_id` → `job_applications.id`
+- `reminders.user_id` → `users.id`
 
 ### 4. Client Claude HTTP
 
@@ -161,6 +165,8 @@ let base_url = env::var("CLAUDE_API_URL")
 
 **Timeout:** 120 secondes par requête
 
+**Retry:** Backoff exponentiel — 3 tentatives avec délais 0s / 1s / 2s sur erreurs 5xx ou timeouts réseau
+
 **Structures de données:**
 - `JobSynthesis` - Résultat de synthèse d'offre
 - `SkillsMatch` - Résultat de matching compétences
@@ -172,6 +178,8 @@ let base_url = env::var("CLAUDE_API_URL")
 **Fichier:** `claude-server/server.py`
 
 **Rôle:** Wrapper HTTP autour de `claude -p`
+
+**Serveur:** `ThreadingHTTPServer` — gère plusieurs requêtes simultanées
 
 **Fonctionnement:**
 1. Reçoit une requête HTTP POST
@@ -275,6 +283,9 @@ pub enum CommandError {
     MissingParameter(String), // Paramètre manquant
     PermissionDenied,         // Accès refusé
     Internal(String),         // Erreur interne
+    NotFound(String),         // Ressource introuvable
+    InvalidInput(String),     // Valeur d'entrée invalide
+    Unauthorized(String),     // Ressource appartenant à un autre utilisateur
 }
 ```
 
@@ -287,9 +298,13 @@ pub enum CommandError {
 
 ### Optimisations
 - Index SQLite sur les colonnes fréquemment requêtées
-- Connection pool via `Arc<Mutex<Connection>>`
+- `Arc<tokio::sync::Mutex<Connection>>` — cède le scheduler entre requêtes DB
+- Dispatch des commandes en O(1) via `HashMap`
+- `ThreadingHTTPServer` côté Python — requêtes Claude parallèles
+- Retry automatique avec backoff exponentiel sur erreurs réseau
+- Heuristique PDF : si le CV source dépasse 8 000 octets, `single_page=true` dès la première tentative (évite la double génération)
 - Defer des réponses Discord pour les opérations longues
 
 ### Points de contention
-- Mutex sur la connexion SQLite (un seul writer)
-- Appels synchrones à Claude (120s timeout)
+- Mutex sur la connexion SQLite (un seul writer à la fois)
+- Timeout global 10 min sur `/applyjob` (5 appels Claude séquentiels)
