@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serenity::all::{
-    Colour, CommandInteraction, CommandOptionType, Context, CreateCommand, CreateCommandOption,
-    CreateEmbed,
+    ChannelId, Colour, CommandInteraction, CommandOptionType, Context, CreateCommand,
+    CreateCommandOption, CreateEmbed, CreateMessage,
 };
 use tracing::{error, info};
 
@@ -147,7 +147,7 @@ impl SlashCommand for GenerateResumeCommand {
         let db = get_database(ctx).await?;
 
         // Récupérer le CV de l'utilisateur
-        let user_cv = db.get_active_cv(user_id.get() as i64)
+        let user_cv = db.get_active_cv(user_id.get() as i64).await
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         let cv_content = match &user_cv {
@@ -276,7 +276,7 @@ impl SlashCommand for GenerateCoverLetterCommand {
 
         // If application_id provided, verify it belongs to user
         if let Some(app_id) = application_id {
-            let app = db.get_application(app_id)
+            let app = db.get_application(app_id).await
                 .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
             match app {
                 Some(a) if a.user_id != user_id.get() as i64 => {
@@ -292,7 +292,7 @@ impl SlashCommand for GenerateCoverLetterCommand {
         }
 
         // Récupérer le CV
-        let user_cv = db.get_active_cv(user_id.get() as i64)
+        let user_cv = db.get_active_cv(user_id.get() as i64).await
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         let cv_content = match &user_cv {
@@ -317,9 +317,25 @@ impl SlashCommand for GenerateCoverLetterCommand {
             Ok(letter) => {
                 // Save to database if application_id provided
                 let saved = if let Some(app_id) = application_id {
-                    match db.save_cover_letter(app_id, &letter) {
+                    match db.save_cover_letter(app_id, &letter).await {
                         Ok(_) => {
                             info!("Saved cover letter to application {}", app_id);
+                            // Post to the application's Discord thread if it exists
+                            if let Ok(Some(app)) = db.get_application(app_id).await {
+                                if let Some(thread_id) = app.thread_id {
+                                    let channel = ChannelId::new(thread_id as u64);
+                                    let thread_embed = CreateEmbed::new()
+                                        .title("LETTRE DE MOTIVATION")
+                                        .colour(Colour::from_rgb(155, 89, 182))
+                                        .description(safe_truncate(&letter, 4000));
+                                    if let Err(e) = channel
+                                        .send_message(&ctx.http, CreateMessage::new().embed(thread_embed))
+                                        .await
+                                    {
+                                        error!("Failed to post cover letter to thread: {}", e);
+                                    }
+                                }
+                            }
                             true
                         }
                         Err(e) => {
@@ -401,7 +417,7 @@ impl SlashCommand for GenerateMarketAnalysisCommand {
         let db = get_database(ctx).await?;
 
         // Récupérer le CV pour l'analyse de marché
-        let user_cv = db.get_active_cv(user_id.get() as i64)
+        let user_cv = db.get_active_cv(user_id.get() as i64).await
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         let cv_content = match &user_cv {
