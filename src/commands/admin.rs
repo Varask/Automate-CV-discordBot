@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use serenity::all::{
-    CommandInteraction, CommandOptionType, Context, CreateCommand, CreateCommandOption,
-    CreateInteractionResponse, CreateInteractionResponseMessage, Permissions,
+    ButtonStyle, CommandInteraction, CommandOptionType, Context, CreateActionRow, CreateButton,
+    CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage,
+    Permissions,
 };
 use tracing::info;
 
@@ -58,7 +59,7 @@ impl SlashCommand for ListCvsCommand {
         }
 
         let db = get_database(ctx).await?;
-        let cvs = db.list_all_cvs()
+        let cvs = db.list_all_cvs().await
             .map_err(|e| CommandError::Internal(format!("DB error: {}", e)))?;
 
         if cvs.is_empty() {
@@ -129,7 +130,7 @@ impl SlashCommand for GetCvCommand {
             .ok_or_else(|| CommandError::MissingParameter("user".to_string()))?;
 
         let db = get_database(ctx).await?;
-        let cv = db.get_active_cv(target_user_id.get() as i64)
+        let cv = db.get_active_cv(target_user_id.get() as i64).await
             .map_err(|e| CommandError::Internal(format!("DB error: {}", e)))?;
 
         match cv {
@@ -192,15 +193,21 @@ impl SlashCommand for ClearAllCvsCommand {
             return send_response(ctx, interaction, "❌ You need administrator permissions.").await;
         }
 
-        let db = get_database(ctx).await?;
-        let count = db.clear_all_cvs()
-            .map_err(|e| CommandError::Internal(format!("DB error: {}", e)))?;
+        let confirm_btn = CreateButton::new("clearallcvs_confirm")
+            .label("Confirmer suppression")
+            .style(ButtonStyle::Danger);
+        let cancel_btn = CreateButton::new("clearallcvs_cancel")
+            .label("Annuler")
+            .style(ButtonStyle::Secondary);
+        let row = CreateActionRow::Buttons(vec![confirm_btn, cancel_btn]);
 
-        let admin_name = interaction.user.name.as_str();
-        info!("Admin '{}' cleared all CVs ({} deleted)", admin_name, count);
-
-        let response = format!("🗑️ **{} CV(s) deleted** by admin `{}`.", count, admin_name);
-        send_response(ctx, interaction, &response).await
+        let msg = CreateInteractionResponseMessage::new()
+            .content("⚠️ **Êtes-vous sûr de vouloir supprimer TOUS les CVs ?** Cette action est irréversible.")
+            .components(vec![row]);
+        interaction
+            .create_response(&ctx.http, CreateInteractionResponse::Message(msg))
+            .await
+            .map_err(|e| CommandError::ResponseFailed(e.to_string()))
     }
 }
 

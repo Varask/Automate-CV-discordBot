@@ -134,6 +134,44 @@ async fn handle_component_interaction(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let custom_id = &component.data.custom_id;
 
+    // Confirmation suppression de tous les CVs
+    if custom_id == "clearallcvs_confirm" {
+        let db = {
+            let data = ctx.data.read().await;
+            data.get::<Database>()
+                .ok_or("Database not found")?
+                .clone()
+        };
+        let count = db.clear_all_cvs().await?;
+        let admin_name = &component.user.name;
+        info!("Admin '{}' confirmed clear of all CVs ({} deleted)", admin_name, count);
+        component
+            .create_response(
+                &ctx.http,
+                serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("🗑️ **{} CV(s) deleted** by admin `{}`.", count, admin_name))
+                        .components(vec![]),
+                ),
+            )
+            .await?;
+        return Ok(());
+    }
+
+    if custom_id == "clearallcvs_cancel" {
+        component
+            .create_response(
+                &ctx.http,
+                serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Suppression annulée.")
+                        .components(vec![]),
+                ),
+            )
+            .await?;
+        return Ok(());
+    }
+
     // Format: status_{application_id}_{new_status}
     if custom_id.starts_with("status_") {
         let parts: Vec<&str> = custom_id.split('_').collect();
@@ -156,7 +194,7 @@ async fn handle_component_interaction(
             };
 
             // Mettre à jour le statut en DB
-            let updated = db.update_application_status(application_id, user_id, new_status, None)?;
+            let updated = db.update_application_status(application_id, user_id, new_status, None).await?;
 
             if !updated {
                 return Err("Cette candidature ne vous appartient pas ou n'existe pas.".into());
@@ -164,7 +202,7 @@ async fn handle_component_interaction(
 
             // Récupérer l'application mise à jour pour reconstruire l'embed
             let app = db
-                .get_application(application_id)?
+                .get_application(application_id).await?
                 .ok_or("Application not found after update")?;
 
             // Reconstruire l'embed avec le nouveau statut
@@ -214,7 +252,7 @@ async fn reminder_check_task(http: Arc<serenity::http::Http>, db: Database) {
         tokio::time::sleep(Duration::from_secs(300)).await;
 
         // Check application reminders
-        match db.get_pending_application_reminders() {
+        match db.get_pending_application_reminders().await {
             Ok(apps) => {
                 for app in apps {
                     info!("Sending reminder for application {} to user {}", app.id, app.user_id);
@@ -237,7 +275,7 @@ async fn reminder_check_task(http: Arc<serenity::http::Http>, db: Database) {
 
                             // Marquer comme envoyé AVANT l'envoi pour éviter le double envoi
                             // en cas de redémarrage du bot entre l'envoi et le marquage
-                            if let Err(e) = db.mark_application_reminder_sent(app.id) {
+                            if let Err(e) = db.mark_application_reminder_sent(app.id).await {
                                 error!("Failed to mark reminder as sent (aborting send): {}", e);
                             } else if let Err(e) = dm_channel.say(&http, &message).await {
                                 error!("Failed to send reminder DM (already marked sent): {}", e);
@@ -255,7 +293,7 @@ async fn reminder_check_task(http: Arc<serenity::http::Http>, db: Database) {
         }
 
         // Check standalone reminders
-        match db.get_pending_reminders() {
+        match db.get_pending_reminders().await {
             Ok(reminders) => {
                 for reminder in reminders {
                     info!("Sending standalone reminder {} to user {}", reminder.id, reminder.user_id);
@@ -271,7 +309,7 @@ async fn reminder_check_task(http: Arc<serenity::http::Http>, db: Database) {
                     );
 
                     // Marquer comme envoyé AVANT l'envoi pour éviter le double envoi
-                    if let Err(e) = db.mark_reminder_sent(reminder.id) {
+                    if let Err(e) = db.mark_reminder_sent(reminder.id).await {
                         error!("Failed to mark standalone reminder as sent (aborting send): {}", e);
                         continue;
                     }
@@ -354,7 +392,7 @@ async fn main() {
     dotenv::dotenv().ok();
 
     // Initialiser la base de données
-    let database = Database::new().expect("Failed to initialize database");
+    let database = Database::new().await.expect("Failed to initialize database");
 
     // Initialiser le client Claude (HTTP)
     let claude_client = Arc::new(ClaudeClient::from_env());
