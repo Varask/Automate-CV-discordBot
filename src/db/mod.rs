@@ -19,7 +19,7 @@ pub struct Database {
 
 impl Database {
     /// Crée une nouvelle instance avec initialisation de la DB
-    pub fn new() -> Result<Self, rusqlite::Error> {
+    pub async fn new() -> Result<Self, rusqlite::Error> {
         let conn = init_database()?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -28,7 +28,7 @@ impl Database {
 
     /// Crée une instance en mémoire (pour les tests)
     #[cfg(test)]
-    pub fn in_memory() -> Result<Self, rusqlite::Error> {
+    pub async fn in_memory() -> Result<Self, rusqlite::Error> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         
@@ -40,13 +40,12 @@ impl Database {
         })
     }
 
-    /// Exécute une opération avec la connexion.
-    /// Utilise blocking_lock() — safe car aucun await n'est tenu pendant la section critique.
-    pub fn with_conn<F, T>(&self, f: F) -> Result<T, rusqlite::Error>
+    /// Exécute une opération avec la connexion (async, cède au scheduler entre tâches).
+    pub async fn with_conn<F, T>(&self, f: F) -> Result<T, rusqlite::Error>
     where
-        F: FnOnce(&Connection) -> Result<T, rusqlite::Error>,
+        F: FnOnce(&Connection) -> Result<T, rusqlite::Error> + Send,
     {
-        let conn = self.conn.blocking_lock();
+        let conn = self.conn.lock().await;
         f(&conn)
     }
 
@@ -54,19 +53,19 @@ impl Database {
     // USER METHODS
     // ========================================================================
 
-    pub fn upsert_user(&self, user_id: i64, username: &str) -> Result<(), rusqlite::Error> {
-        self.with_conn(|conn| utilities::upsert_user(conn, user_id, username))
+    pub async fn upsert_user(&self, user_id: i64, username: &str) -> Result<(), rusqlite::Error> {
+        self.with_conn(|conn| utilities::upsert_user(conn, user_id, username)).await
     }
 
-    pub fn get_user(&self, user_id: i64) -> Result<Option<User>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::get_user(conn, user_id))
+    pub async fn get_user(&self, user_id: i64) -> Result<Option<User>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::get_user(conn, user_id)).await
     }
 
     // ========================================================================
     // CV METHODS
     // ========================================================================
 
-    pub fn save_cv(
+    pub async fn save_cv(
         &self,
         user_id: i64,
         filename: &str,
@@ -77,35 +76,35 @@ impl Database {
     ) -> Result<i64, rusqlite::Error> {
         self.with_conn(|conn| {
             utilities::save_cv(conn, user_id, filename, original_name, file_path, file_size, mime_type)
-        })
+        }).await
     }
 
-    pub fn get_active_cv(&self, user_id: i64) -> Result<Option<BaseCv>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::get_active_cv(conn, user_id))
+    pub async fn get_active_cv(&self, user_id: i64) -> Result<Option<BaseCv>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::get_active_cv(conn, user_id)).await
     }
 
-    pub fn list_user_cvs(&self, user_id: i64) -> Result<Vec<BaseCv>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::list_user_cvs(conn, user_id))
+    pub async fn list_user_cvs(&self, user_id: i64) -> Result<Vec<BaseCv>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::list_user_cvs(conn, user_id)).await
     }
 
-    pub fn delete_active_cv(&self, user_id: i64) -> Result<bool, rusqlite::Error> {
-        self.with_conn(|conn| utilities::delete_active_cv(conn, user_id))
+    pub async fn delete_active_cv(&self, user_id: i64) -> Result<bool, rusqlite::Error> {
+        self.with_conn(|conn| utilities::delete_active_cv(conn, user_id)).await
     }
 
-    pub fn update_cv_extracted_data(
+    pub async fn update_cv_extracted_data(
         &self,
         cv_id: i64,
         extracted_text: &str,
         parsed_data: &str,
     ) -> Result<(), rusqlite::Error> {
-        self.with_conn(|conn| utilities::update_cv_extracted_data(conn, cv_id, extracted_text, parsed_data))
+        self.with_conn(|conn| utilities::update_cv_extracted_data(conn, cv_id, extracted_text, parsed_data)).await
     }
 
     // ========================================================================
     // APPLICATION METHODS
     // ========================================================================
 
-    pub fn create_application(
+    pub async fn create_application(
         &self,
         user_id: i64,
         base_cv_id: Option<i64>,
@@ -119,23 +118,23 @@ impl Database {
             utilities::create_application(
                 conn, user_id, base_cv_id, job_title, company, location, job_url, raw_job_description
             )
-        })
+        }).await
     }
 
-    pub fn get_application(&self, application_id: i64) -> Result<Option<JobApplication>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::get_application(conn, application_id))
+    pub async fn get_application(&self, application_id: i64) -> Result<Option<JobApplication>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::get_application(conn, application_id)).await
     }
 
-    pub fn list_applications(
+    pub async fn list_applications(
         &self,
         user_id: i64,
         status_filter: Option<&str>,
         limit: i64,
     ) -> Result<Vec<JobApplication>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::list_applications(conn, user_id, status_filter, limit))
+        self.with_conn(|conn| utilities::list_applications(conn, user_id, status_filter, limit)).await
     }
 
-    pub fn update_application_status(
+    pub async fn update_application_status(
         &self,
         application_id: i64,
         user_id: i64,
@@ -144,26 +143,26 @@ impl Database {
     ) -> Result<bool, rusqlite::Error> {
         self.with_conn(|conn| {
             utilities::update_application_status(conn, application_id, user_id, new_status, note)
-        })
+        }).await
     }
 
-    pub fn update_application_thread(
+    pub async fn update_application_thread(
         &self,
         application_id: i64,
         thread_id: i64,
     ) -> Result<(), rusqlite::Error> {
-        self.with_conn(|conn| utilities::update_application_thread(conn, application_id, thread_id))
+        self.with_conn(|conn| utilities::update_application_thread(conn, application_id, thread_id)).await
     }
 
-    pub fn update_application_notes(
+    pub async fn update_application_notes(
         &self,
         application_id: i64,
         notes: &str,
     ) -> Result<(), rusqlite::Error> {
-        self.with_conn(|conn| utilities::update_application_notes(conn, application_id, notes))
+        self.with_conn(|conn| utilities::update_application_notes(conn, application_id, notes)).await
     }
 
-    pub fn update_application_analysis(
+    pub async fn update_application_analysis(
         &self,
         application_id: i64,
         job_synthesis: &str,
@@ -176,10 +175,10 @@ impl Database {
             utilities::update_application_analysis(
                 conn, application_id, job_synthesis, required_skills, matching_skills, missing_skills, match_score
             )
-        })
+        }).await
     }
 
-    pub fn update_application_salary(
+    pub async fn update_application_salary(
         &self,
         application_id: i64,
         salary_min: Option<i32>,
@@ -194,10 +193,10 @@ impl Database {
                 conn, application_id, salary_min, salary_max, salary_analysis,
                 market_salary_low, market_salary_mid, market_salary_high
             )
-        })
+        }).await
     }
 
-    pub fn update_application_generated_cv(
+    pub async fn update_application_generated_cv(
         &self,
         application_id: i64,
         generated_cv_path: &str,
@@ -205,86 +204,86 @@ impl Database {
     ) -> Result<(), rusqlite::Error> {
         self.with_conn(|conn| {
             utilities::update_application_generated_cv(conn, application_id, generated_cv_path, format)
-        })
+        }).await
     }
 
     // ========================================================================
     // STATS METHODS
     // ========================================================================
 
-    pub fn get_user_stats(&self, user_id: i64) -> Result<UserStats, rusqlite::Error> {
-        self.with_conn(|conn| utilities::get_user_stats(conn, user_id))
+    pub async fn get_user_stats(&self, user_id: i64) -> Result<UserStats, rusqlite::Error> {
+        self.with_conn(|conn| utilities::get_user_stats(conn, user_id)).await
     }
 
     // ========================================================================
     // ADMIN METHODS
     // ========================================================================
 
-    pub fn list_all_cvs(&self) -> Result<Vec<(i64, String, BaseCv)>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::list_all_cvs(conn))
+    pub async fn list_all_cvs(&self) -> Result<Vec<(i64, String, BaseCv)>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::list_all_cvs(conn)).await
     }
 
-    pub fn clear_all_cvs(&self) -> Result<usize, rusqlite::Error> {
-        self.with_conn(|conn| utilities::clear_all_cvs(conn))
+    pub async fn clear_all_cvs(&self) -> Result<usize, rusqlite::Error> {
+        self.with_conn(|conn| utilities::clear_all_cvs(conn)).await
     }
 
     // ========================================================================
     // COVER LETTER METHODS
     // ========================================================================
 
-    pub fn save_cover_letter(
+    pub async fn save_cover_letter(
         &self,
         application_id: i64,
         cover_letter: &str,
     ) -> Result<(), rusqlite::Error> {
-        self.with_conn(|conn| utilities::save_cover_letter(conn, application_id, cover_letter))
+        self.with_conn(|conn| utilities::save_cover_letter(conn, application_id, cover_letter)).await
     }
 
-    pub fn get_cover_letter(&self, application_id: i64) -> Result<Option<String>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::get_cover_letter(conn, application_id))
+    pub async fn get_cover_letter(&self, application_id: i64) -> Result<Option<String>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::get_cover_letter(conn, application_id)).await
     }
 
-    pub fn list_applications_with_cover_letters(
+    pub async fn list_applications_with_cover_letters(
         &self,
         user_id: i64,
         limit: i64,
     ) -> Result<Vec<JobApplication>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::list_applications_with_cover_letters(conn, user_id, limit))
+        self.with_conn(|conn| utilities::list_applications_with_cover_letters(conn, user_id, limit)).await
     }
 
     // ========================================================================
     // APPLICATION REMINDER METHODS
     // ========================================================================
 
-    pub fn set_application_reminder(
+    pub async fn set_application_reminder(
         &self,
         application_id: i64,
         reminder_date: &str,
     ) -> Result<(), rusqlite::Error> {
-        self.with_conn(|conn| utilities::set_application_reminder(conn, application_id, reminder_date))
+        self.with_conn(|conn| utilities::set_application_reminder(conn, application_id, reminder_date)).await
     }
 
-    pub fn clear_application_reminder(&self, application_id: i64) -> Result<(), rusqlite::Error> {
-        self.with_conn(|conn| utilities::clear_application_reminder(conn, application_id))
+    pub async fn clear_application_reminder(&self, application_id: i64) -> Result<(), rusqlite::Error> {
+        self.with_conn(|conn| utilities::clear_application_reminder(conn, application_id)).await
     }
 
-    pub fn mark_application_reminder_sent(&self, application_id: i64) -> Result<(), rusqlite::Error> {
-        self.with_conn(|conn| utilities::mark_application_reminder_sent(conn, application_id))
+    pub async fn mark_application_reminder_sent(&self, application_id: i64) -> Result<(), rusqlite::Error> {
+        self.with_conn(|conn| utilities::mark_application_reminder_sent(conn, application_id)).await
     }
 
-    pub fn get_pending_application_reminders(&self) -> Result<Vec<JobApplication>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::get_pending_application_reminders(conn))
+    pub async fn get_pending_application_reminders(&self) -> Result<Vec<JobApplication>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::get_pending_application_reminders(conn)).await
     }
 
-    pub fn list_user_application_reminders(&self, user_id: i64) -> Result<Vec<JobApplication>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::list_user_application_reminders(conn, user_id))
+    pub async fn list_user_application_reminders(&self, user_id: i64) -> Result<Vec<JobApplication>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::list_user_application_reminders(conn, user_id)).await
     }
 
     // ========================================================================
     // STANDALONE REMINDER METHODS
     // ========================================================================
 
-    pub fn create_reminder(
+    pub async fn create_reminder(
         &self,
         user_id: i64,
         application_id: Option<i64>,
@@ -294,34 +293,34 @@ impl Database {
     ) -> Result<i64, rusqlite::Error> {
         self.with_conn(|conn| {
             utilities::create_reminder(conn, user_id, application_id, channel_id, reminder_date, message)
-        })
+        }).await
     }
 
-    pub fn get_reminder(&self, reminder_id: i64) -> Result<Option<Reminder>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::get_reminder(conn, reminder_id))
+    pub async fn get_reminder(&self, reminder_id: i64) -> Result<Option<Reminder>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::get_reminder(conn, reminder_id)).await
     }
 
-    pub fn list_user_reminders(&self, user_id: i64) -> Result<Vec<Reminder>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::list_user_reminders(conn, user_id))
+    pub async fn list_user_reminders(&self, user_id: i64) -> Result<Vec<Reminder>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::list_user_reminders(conn, user_id)).await
     }
 
-    pub fn delete_reminder(&self, reminder_id: i64, user_id: i64) -> Result<bool, rusqlite::Error> {
-        self.with_conn(|conn| utilities::delete_reminder(conn, reminder_id, user_id))
+    pub async fn delete_reminder(&self, reminder_id: i64, user_id: i64) -> Result<bool, rusqlite::Error> {
+        self.with_conn(|conn| utilities::delete_reminder(conn, reminder_id, user_id)).await
     }
 
-    pub fn mark_reminder_sent(&self, reminder_id: i64) -> Result<(), rusqlite::Error> {
-        self.with_conn(|conn| utilities::mark_reminder_sent(conn, reminder_id))
+    pub async fn mark_reminder_sent(&self, reminder_id: i64) -> Result<(), rusqlite::Error> {
+        self.with_conn(|conn| utilities::mark_reminder_sent(conn, reminder_id)).await
     }
 
-    pub fn get_pending_reminders(&self) -> Result<Vec<Reminder>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::get_pending_reminders(conn))
+    pub async fn get_pending_reminders(&self) -> Result<Vec<Reminder>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::get_pending_reminders(conn)).await
     }
 
-    pub fn get_application_status_history(
+    pub async fn get_application_status_history(
         &self,
         application_id: i64,
     ) -> Result<Vec<utilities::ApplicationStatusHistory>, rusqlite::Error> {
-        self.with_conn(|conn| utilities::get_application_status_history(conn, application_id))
+        self.with_conn(|conn| utilities::get_application_status_history(conn, application_id)).await
     }
 }
 
