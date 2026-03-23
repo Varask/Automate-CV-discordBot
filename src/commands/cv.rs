@@ -134,7 +134,7 @@ impl SlashCommand for SendCvCommand {
         let claude_client = get_claude_client(ctx).await?;
 
         // Upsert user first
-        if let Err(e) = db.upsert_user(user_id.get() as i64, username) {
+        if let Err(e) = db.upsert_user(user_id.get() as i64, username).await {
             error!("Failed to upsert user: {}", e);
         }
 
@@ -146,7 +146,7 @@ impl SlashCommand for SendCvCommand {
             file_path.to_string_lossy().as_ref(),
             attachment.size as i64,
             attachment.content_type.as_deref(),
-        ).map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
+        ).await.map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         info!("CV saved to database with id {}", cv_id);
 
@@ -189,7 +189,7 @@ impl SlashCommand for SendCvCommand {
 
         // Sauvegarder le texte extrait
         if let Some(ref text) = extracted_text {
-            if let Err(e) = db.update_cv_extracted_data(cv_id, text, "{}") {
+            if let Err(e) = db.update_cv_extracted_data(cv_id, text, "{}").await {
                 warn!("Failed to save extracted text: {}", e);
             } else {
                 info!("Extracted text saved for CV {}", cv_id);
@@ -264,13 +264,13 @@ impl SlashCommand for DeleteCvCommand {
         let db = get_database(ctx).await?;
 
         // Vérifier s'il y a un CV actif
-        let cv = db.get_active_cv(user_id.get() as i64)
+        let cv = db.get_active_cv(user_id.get() as i64).await
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         match cv {
             Some(cv) => {
                 // Supprimer de la DB d'abord (évite orphan en cas d'erreur fichier)
-                db.delete_active_cv(user_id.get() as i64)
+                db.delete_active_cv(user_id.get() as i64).await
                     .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
                 // Supprimer le fichier physique ensuite
@@ -335,7 +335,7 @@ impl SlashCommand for ListMyCvsCommand {
         let db = get_database(ctx).await?;
 
         // Récupérer la liste des CVs
-        let cvs = db.list_user_cvs(user_id.get() as i64)
+        let cvs = db.list_user_cvs(user_id.get() as i64).await
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         if cvs.is_empty() {

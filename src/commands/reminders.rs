@@ -122,7 +122,7 @@ impl SlashCommand for SetReminderCommand {
         let db = get_database(ctx).await?;
 
         // Verify application exists and belongs to user
-        let app = db.get_application(application_id)
+        let app = db.get_application(application_id).await
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?
             .ok_or_else(|| CommandError::NotFound("Application not found".to_string()))?;
 
@@ -143,7 +143,7 @@ impl SlashCommand for SetReminderCommand {
         let reminder_date_str = reminder_datetime.format("%Y-%m-%d %H:%M:%S").to_string();
 
         // Set reminder
-        db.set_application_reminder(application_id, &reminder_date_str)
+        db.set_application_reminder(application_id, &reminder_date_str).await
             .map_err(|e| CommandError::Internal(format!("Failed to set reminder: {}", e)))?;
 
         info!("Set reminder for application {} on {}", application_id, reminder_date_str);
@@ -212,11 +212,11 @@ impl SlashCommand for ListRemindersCommand {
         let db = get_database(ctx).await?;
 
         // Get application reminders
-        let app_reminders = db.list_user_application_reminders(user_id)
+        let app_reminders = db.list_user_application_reminders(user_id).await
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         // Get standalone reminders
-        let standalone_reminders = db.list_user_reminders(user_id)
+        let standalone_reminders = db.list_user_reminders(user_id).await
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         if app_reminders.is_empty() && standalone_reminders.is_empty() {
@@ -350,7 +350,7 @@ impl SlashCommand for ClearReminderCommand {
         let db = get_database(ctx).await?;
 
         // Verify application exists and belongs to user
-        let app = db.get_application(application_id)
+        let app = db.get_application(application_id).await
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?
             .ok_or_else(|| CommandError::NotFound("Application not found".to_string()))?;
 
@@ -359,7 +359,7 @@ impl SlashCommand for ClearReminderCommand {
         }
 
         // Clear reminder
-        db.clear_application_reminder(application_id)
+        db.clear_application_reminder(application_id).await
             .map_err(|e| CommandError::Internal(format!("Failed to clear reminder: {}", e)))?;
 
         info!("Cleared reminder for application {}", application_id);
@@ -506,7 +506,7 @@ impl SlashCommand for CreateReminderCommand {
         let reminder_date_str = reminder_datetime.format("%Y-%m-%d %H:%M:%S").to_string();
 
         // Create reminder
-        let reminder_id = db.create_reminder(user_id, None, channel_id, &reminder_date_str, &message)
+        let reminder_id = db.create_reminder(user_id, None, channel_id, &reminder_date_str, &message).await
             .map_err(|e| CommandError::Internal(format!("Failed to create reminder: {}", e)))?;
 
         info!("Created standalone reminder {} for user {}", reminder_id, user_id);
@@ -587,7 +587,7 @@ impl SlashCommand for DeleteReminderCommand {
 
         let db = get_database(ctx).await?;
 
-        let deleted = db.delete_reminder(reminder_id, user_id)
+        let deleted = db.delete_reminder(reminder_id, user_id).await
             .map_err(|e| CommandError::Internal(format!("Failed to delete reminder: {}", e)))?;
 
         if !deleted {

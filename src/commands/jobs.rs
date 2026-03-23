@@ -250,7 +250,7 @@ impl ApplyJobCommand {
         };
 
         // 2. Récupérer le CV de l'utilisateur depuis la DB
-        let user_cv = db.get_active_cv(user_id.get() as i64)
+        let user_cv = db.get_active_cv(user_id.get() as i64).await
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         // Sauvegarder la candidature en DB
@@ -267,12 +267,12 @@ impl ApplyJobCommand {
                 Some(&synthesis.location),
                 job_url.as_deref(),
                 &job_description,
-            )
+            ).await
             .map_err(|e| CommandError::Internal(format!("Failed to save application: {}", e)))?;
 
         // Sauvegarder les notes si fournies
         if let Some(ref notes_text) = notes {
-            if let Err(e) = db.update_application_notes(application_id, notes_text) {
+            if let Err(e) = db.update_application_notes(application_id, notes_text).await {
                 warn!("Failed to save application notes: {}", e);
             }
         }
@@ -300,7 +300,7 @@ impl ApplyJobCommand {
         info!("Created thread {} for job application", thread.id);
 
         // Sauvegarder le thread_id en DB
-        if let Err(e) = db.update_application_thread(application_id, thread.id.get() as i64) {
+        if let Err(e) = db.update_application_thread(application_id, thread.id.get() as i64).await {
             warn!("Failed to save thread_id: {}", e);
         }
 
@@ -601,7 +601,7 @@ impl ApplyJobCommand {
             &serde_json::to_string(&skills_match.matched_skills).unwrap_or_default(),
             &serde_json::to_string(&skills_match.missing_skills).unwrap_or_default(),
             skills_match.match_score as i32,
-        ) {
+        ).await {
             warn!("Failed to update application analysis: {}", e);
         }
 
@@ -1252,7 +1252,7 @@ impl SlashCommand for ApplicationHistoryCommand {
         let db = get_database(ctx).await?;
 
         // Verify the application belongs to the user
-        let app = db.get_application(application_id)
+        let app = db.get_application(application_id).await
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?
             .ok_or_else(|| CommandError::NotFound(format!("Application #{} not found", application_id)))?;
 
@@ -1260,7 +1260,7 @@ impl SlashCommand for ApplicationHistoryCommand {
             return send_response(ctx, interaction, "❌ Cette candidature ne vous appartient pas.").await;
         }
 
-        let history = db.get_application_status_history(application_id)
+        let history = db.get_application_status_history(application_id).await
             .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
         if history.is_empty() {
