@@ -106,7 +106,7 @@ impl Database {
     pub fn create_application(
         &self,
         user_id: i64,
-        base_cv_id: i64,
+        base_cv_id: Option<i64>,
         job_title: Option<&str>,
         company: Option<&str>,
         location: Option<&str>,
@@ -313,6 +313,13 @@ impl Database {
 
     pub fn get_pending_reminders(&self) -> Result<Vec<Reminder>, rusqlite::Error> {
         self.with_conn(|conn| utilities::get_pending_reminders(conn))
+    }
+
+    pub fn get_application_status_history(
+        &self,
+        application_id: i64,
+    ) -> Result<Vec<utilities::ApplicationStatusHistory>, rusqlite::Error> {
+        self.with_conn(|conn| utilities::get_application_status_history(conn, application_id))
     }
 }
 

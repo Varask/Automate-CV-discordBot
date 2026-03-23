@@ -3,6 +3,7 @@
 use rusqlite::{Connection, Result};
 use std::path::Path;
 use std::fs;
+use tracing::info;
 
 const DB_DIR: &str = "dbLookout";
 const DB_NAME: &str = "bot.db";
@@ -17,13 +18,13 @@ pub fn init_database() -> Result<Connection> {
     // Créer le dossier dbLookout s'il n'existe pas
     if !Path::new(DB_DIR).exists() {
         fs::create_dir_all(DB_DIR).expect("Failed to create database directory");
-        println!("📁 Created database directory: {}", DB_DIR);
+        info!("Created database directory: {}", DB_DIR);
     }
 
     let db_path = get_db_path();
     let conn = Connection::open(&db_path)?;
     
-    println!("🗄️  Connected to database: {}", db_path);
+    info!("Connected to database: {}", db_path);
 
     // Activer les foreign keys
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
@@ -31,7 +32,7 @@ pub fn init_database() -> Result<Connection> {
     // Créer les tables
     create_tables(&conn)?;
 
-    println!("✅ Database initialized successfully");
+    info!("Database initialized successfully");
     Ok(conn)
 }
 
@@ -48,7 +49,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    println!("  📋 Table 'users' ready");
+    info!("Table 'users' ready");
 
     // Table: base_cvs
     conn.execute(
@@ -68,14 +69,14 @@ fn create_tables(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    println!("  📋 Table 'base_cvs' ready");
+    info!("Table 'base_cvs' ready");
 
     // Table: job_applications
     conn.execute(
         "CREATE TABLE IF NOT EXISTS job_applications (
             id                      INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id                 INTEGER NOT NULL,
-            base_cv_id              INTEGER NOT NULL,
+            base_cv_id              INTEGER,  -- nullable: candidature possible sans CV uploadé
             
             -- Job offer info
             job_title               TEXT,
@@ -128,7 +129,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    println!("  📋 Table 'job_applications' ready");
+    info!("Table 'job_applications' ready");
 
     // Table: application_status_history
     conn.execute(
@@ -143,7 +144,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    println!("  📋 Table 'application_status_history' ready");
+    info!("Table 'application_status_history' ready");
 
     // Table: reminders (standalone reminders not linked to applications)
     conn.execute(
@@ -161,7 +162,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    println!("  📋 Table 'reminders' ready");
+    info!("Table 'reminders' ready");
 
     // Exécuter les migrations pour les colonnes manquantes
     run_migrations(conn)?;
@@ -172,19 +173,95 @@ fn create_tables(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Exécute les migrations pour ajouter les colonnes manquantes aux tables existantes
+/// Exécute les migrations versionnées
 fn run_migrations(conn: &Connection) -> Result<()> {
-    // Migration: Ajouter reminder_date et reminder_sent à job_applications si absents
-    // Ces colonnes ont été ajoutées après la création initiale de la table
-    let _ = conn.execute(
-        "ALTER TABLE job_applications ADD COLUMN reminder_date DATETIME",
+    // Créer la table de version de migrations si elle n'existe pas
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version  INTEGER PRIMARY KEY,
+            applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )",
         [],
-    ); // Ignore l'erreur si la colonne existe déjà
+    )?;
 
-    let _ = conn.execute(
-        "ALTER TABLE job_applications ADD COLUMN reminder_sent INTEGER DEFAULT 0",
-        [],
-    ); // Ignore l'erreur si la colonne existe déjà
+    // Helper: vérifier si une migration a déjà été appliquée
+    let is_applied = |version: i64| -> Result<bool> {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+                [version],
+                |row| row.get(0),
+            )?;
+        Ok(count > 0)
+    };
+
+    // Migration 1: Ajouter reminder_date et reminder_sent à job_applications
+    if !is_applied(1)? {
+        let _ = conn.execute("ALTER TABLE job_applications ADD COLUMN reminder_date DATETIME", []);
+        let _ = conn.execute("ALTER TABLE job_applications ADD COLUMN reminder_sent INTEGER DEFAULT 0", []);
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (1)", [])?;
+    }
+
+    // Migration 2: Rendre base_cv_id nullable (reconstruit la table)
+    if !is_applied(2)? {
+        // Vérifier si la colonne est NOT NULL en inspectant le schéma
+        let schema: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='job_applications'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        // Recréer uniquement si base_cv_id NOT NULL est encore présent
+        if schema.to_uppercase().contains("BASE_CV_ID") && schema.to_uppercase().contains("NOT NULL") {
+            conn.execute_batch(
+                "BEGIN;
+                CREATE TABLE IF NOT EXISTS job_applications_migration AS SELECT * FROM job_applications;
+                DROP TABLE job_applications;
+                CREATE TABLE job_applications (
+                    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id                 INTEGER NOT NULL,
+                    base_cv_id              INTEGER,
+                    job_title               TEXT,
+                    company                 TEXT,
+                    location                TEXT,
+                    job_url                 TEXT,
+                    raw_job_description     TEXT NOT NULL,
+                    job_synthesis           TEXT,
+                    required_skills         TEXT,
+                    matching_skills         TEXT,
+                    missing_skills          TEXT,
+                    match_score             INTEGER,
+                    salary_min              INTEGER,
+                    salary_max              INTEGER,
+                    salary_currency         TEXT DEFAULT 'EUR',
+                    salary_analysis         TEXT,
+                    market_salary_low       INTEGER,
+                    market_salary_mid       INTEGER,
+                    market_salary_high      INTEGER,
+                    generated_cv_path       TEXT,
+                    generated_cv_format     TEXT DEFAULT 'pdf',
+                    cover_letter            TEXT,
+                    cover_letter_generated_at DATETIME,
+                    thread_id               INTEGER,
+                    status                  TEXT DEFAULT 'generated',
+                    applied_at              DATETIME,
+                    notes                   TEXT,
+                    reminder_date           DATETIME,
+                    reminder_sent           INTEGER DEFAULT 0,
+                    created_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY (base_cv_id) REFERENCES base_cvs(id)
+                );
+                INSERT INTO job_applications SELECT * FROM job_applications_migration;
+                DROP TABLE job_applications_migration;
+                COMMIT;",
+            )?;
+        }
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (2)", [])?;
+    }
 
     Ok(())
 }
@@ -212,7 +289,7 @@ fn create_indexes(conn: &Connection) -> Result<()> {
     for idx in indexes {
         conn.execute(idx, [])?;
     }
-    println!("  🔍 Indexes created");
+    info!("Indexes created");
 
     Ok(())
 }

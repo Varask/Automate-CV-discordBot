@@ -8,9 +8,7 @@ use std::path::PathBuf;
 use tracing::{info, error, warn};
 use uuid::Uuid;
 
-use super::{CommandError, SlashCommand};
-use crate::db::Database;
-use crate::ClaudeClientKey;
+use super::{CommandError, SlashCommand, get_claude_client, get_database};
 
 // ============================================================================
 // SendCV Command
@@ -132,16 +130,8 @@ impl SlashCommand for SendCvCommand {
         info!("CV saved to {:?}", file_path);
 
         // Sauvegarder en base de données
-        let (db, claude_client) = {
-            let data = ctx.data.read().await;
-            let db = data.get::<Database>()
-                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone();
-            let claude = data.get::<ClaudeClientKey>()
-                .ok_or_else(|| CommandError::Internal("Claude client not found".to_string()))?
-                .clone();
-            (db, claude)
-        };
+        let db = get_database(ctx).await?;
+        let claude_client = get_claude_client(ctx).await?;
 
         // Upsert user first
         if let Err(e) = db.upsert_user(user_id.get() as i64, username) {
@@ -271,13 +261,7 @@ impl SlashCommand for DeleteCvCommand {
     async fn execute(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<(), CommandError> {
         let user_id = interaction.user.id;
 
-        // Récupérer la DB
-        let db = {
-            let data = ctx.data.read().await;
-            data.get::<Database>()
-                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone()
-        };
+        let db = get_database(ctx).await?;
 
         // Vérifier s'il y a un CV actif
         let cv = db.get_active_cv(user_id.get() as i64)
@@ -285,19 +269,19 @@ impl SlashCommand for DeleteCvCommand {
 
         match cv {
             Some(cv) => {
-                // Supprimer le fichier physique
+                // Supprimer de la DB d'abord (évite orphan en cas d'erreur fichier)
+                db.delete_active_cv(user_id.get() as i64)
+                    .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
+
+                // Supprimer le fichier physique ensuite
                 let file_path = PathBuf::from(&cv.file_path);
                 if file_path.exists() {
                     if let Err(e) = std::fs::remove_file(&file_path) {
-                        error!("Failed to delete CV file: {}", e);
+                        warn!("Failed to delete CV file (DB entry already removed): {}", e);
                     } else {
                         info!("Deleted CV file: {:?}", file_path);
                     }
                 }
-
-                // Supprimer de la DB
-                db.delete_active_cv(user_id.get() as i64)
-                    .map_err(|e| CommandError::Internal(format!("Database error: {}", e)))?;
 
                 let response = format!(
                     "🗑️ **CV supprimé!**\n\n📄 Fichier: `{}`",
@@ -348,13 +332,7 @@ impl SlashCommand for ListMyCvsCommand {
     async fn execute(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<(), CommandError> {
         let user_id = interaction.user.id;
 
-        // Récupérer la DB
-        let db = {
-            let data = ctx.data.read().await;
-            data.get::<Database>()
-                .ok_or_else(|| CommandError::Internal("Database not found".to_string()))?
-                .clone()
-        };
+        let db = get_database(ctx).await?;
 
         // Récupérer la liste des CVs
         let cvs = db.list_user_cvs(user_id.get() as i64)

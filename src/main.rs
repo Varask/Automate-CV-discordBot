@@ -3,7 +3,7 @@ mod db;
 mod services;
 
 use commands::{
-    ApplyJobCommand, ClearAllCvsCommand, CommandRegistry, DeleteCvCommand,
+    ApplyJobCommand, ApplicationHistoryCommand, ClearAllCvsCommand, CommandRegistry, DeleteCvCommand,
     GenerateCoverLetterCommand, GenerateMarketAnalysisCommand, GenerateResumeCommand,
     GetCvCommand, HelpCommand, ListCvsCommand, ListMyCvsCommand, MyStatsCommand,
     SendCvCommand, StatusCommand, SynthesizeOfferCommand, UpdateStatusCommand,
@@ -235,13 +235,12 @@ async fn reminder_check_task(http: Arc<serenity::http::Http>, db: Database) {
                                 app.status
                             );
 
-                            if let Err(e) = dm_channel.say(&http, &message).await {
-                                error!("Failed to send reminder DM: {}", e);
-                            } else {
-                                // Mark as sent
-                                if let Err(e) = db.mark_application_reminder_sent(app.id) {
-                                    error!("Failed to mark reminder as sent: {}", e);
-                                }
+                            // Marquer comme envoyé AVANT l'envoi pour éviter le double envoi
+                            // en cas de redémarrage du bot entre l'envoi et le marquage
+                            if let Err(e) = db.mark_application_reminder_sent(app.id) {
+                                error!("Failed to mark reminder as sent (aborting send): {}", e);
+                            } else if let Err(e) = dm_channel.say(&http, &message).await {
+                                error!("Failed to send reminder DM (already marked sent): {}", e);
                             }
                         }
                         Err(e) => {
@@ -271,18 +270,23 @@ async fn reminder_check_task(http: Arc<serenity::http::Http>, db: Database) {
                         reminder.message
                     );
 
+                    // Marquer comme envoyé AVANT l'envoi pour éviter le double envoi
+                    if let Err(e) = db.mark_reminder_sent(reminder.id) {
+                        error!("Failed to mark standalone reminder as sent (aborting send): {}", e);
+                        continue;
+                    }
+
                     if let Err(e) = channel_id.say(&http, &message).await {
-                        error!("Failed to send reminder to channel: {}", e);
+                        error!("Failed to send reminder to channel (already marked sent): {}", e);
                         // Try DM as fallback
                         let user_id = UserId::new(reminder.user_id as u64);
                         if let Ok(dm_channel) = user_id.create_dm_channel(&http).await {
-                            let _ = dm_channel.say(&http, &format!("**Rappel**\n\n{}", reminder.message)).await;
+                            if let Err(e) = dm_channel.say(&http, &format!("**Rappel**\n\n{}", reminder.message)).await {
+                                error!("Failed to send reminder DM fallback: {}", e);
+                            }
+                        } else {
+                            error!("Failed to create DM channel for reminder fallback (user {})", reminder.user_id);
                         }
-                    }
-
-                    // Mark as sent
-                    if let Err(e) = db.mark_reminder_sent(reminder.id) {
-                        error!("Failed to mark standalone reminder as sent: {}", e);
                     }
                 }
             }
@@ -309,7 +313,8 @@ fn build_registry() -> CommandRegistry {
         .register(ApplyJobCommand::new())
         .register(StatusCommand::new())
         .register(UpdateStatusCommand::new())
-        .register(MyStatsCommand::new());
+        .register(MyStatsCommand::new())
+        .register(ApplicationHistoryCommand::new());
 
     // === ADMIN COMMANDS ===
     registry

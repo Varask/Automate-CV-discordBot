@@ -289,7 +289,7 @@ pub fn update_cv_extracted_data(
 pub fn create_application(
     conn: &Connection,
     user_id: i64,
-    base_cv_id: i64,
+    base_cv_id: Option<i64>,
     job_title: Option<&str>,
     company: Option<&str>,
     location: Option<&str>,
@@ -297,7 +297,7 @@ pub fn create_application(
     raw_job_description: &str,
 ) -> Result<i64> {
     conn.execute(
-        "INSERT INTO job_applications 
+        "INSERT INTO job_applications
          (user_id, base_cv_id, job_title, company, location, job_url, raw_job_description)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![user_id, base_cv_id, job_title, company, location, job_url, raw_job_description],
@@ -795,6 +795,33 @@ pub fn mark_reminder_sent(conn: &Connection, reminder_id: i64) -> Result<()> {
         params![reminder_id],
     )?;
     Ok(())
+}
+
+/// Récupère l'historique des statuts d'une candidature
+pub fn get_application_status_history(
+    conn: &Connection,
+    application_id: i64,
+) -> Result<Vec<ApplicationStatusHistory>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, application_id, old_status, new_status, note, changed_at
+         FROM application_status_history
+         WHERE application_id = ?1
+         ORDER BY changed_at ASC",
+    )?;
+    let history: Vec<ApplicationStatusHistory> = stmt
+        .query_map([application_id], |row| {
+            Ok(ApplicationStatusHistory {
+                id: row.get(0)?,
+                application_id: row.get(1)?,
+                old_status: row.get(2)?,
+                new_status: row.get(3)?,
+                note: row.get(4)?,
+                changed_at: row.get(5)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(history)
 }
 
 /// Liste tous les rappels en attente (date passée et non envoyés)
